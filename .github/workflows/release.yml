@@ -48,7 +48,7 @@ jobs:
             [[ "$os" == "windows" ]] && binary_name="lug.exe"
             
             # 编译
-            GOOS=$os GOARCH=$arch go build -o $binary_name ./cmd/lug
+            GOOS=$os GOARCH=$arch go build -o $binary_name .
             
             # 打包
             package_name="${binary_name}_${VERSION}_${os}_${arch}"
