@@ -41,17 +41,24 @@ jobs:
             "darwin amd64 tar.gz"
             "darwin arm64 tar.gz"
             "windows amd64 zip exe"
+            "windows arm64 zip exe"
           )
 
           for target in "${targets[@]}"; do
             IFS=' ' read -r os arch format ext <<< "$target"
             binary_name="lug"
-            upx_arg=""
             [[ "$os" == "windows" ]] && binary_name="lug.exe"
+
+            upx_arg="upx $binary_name"
+            
             [[ "$os" == "darwin" ]] && upx_arg="--force-macos"
             
-            GOOS=$os GOARCH=$arch go build -o $binary_name . && upx $upx_arg $binary_name
+            GOOS=$os GOARCH=$arch go build -o $binary_name . 
             
+            if [[ "$os" == "linux" ]] || [[ "$os" == "windows" && "$arch" != "arm64" ]]; then
+              upx $binary_name
+            fi
+
             package_name="${binary_name}-${VERSION}-${os}-${arch}"
             if [ "$format" == "zip" ]; then
               zip "release/${package_name}.zip" $binary_name
