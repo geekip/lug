@@ -38,10 +38,9 @@ jobs:
           targets=(
             "linux amd64 tar.gz"
             "linux arm64 tar.gz"
-            "windows amd64 zip exe"
-            "windows arm64 zip exe"
             "darwin amd64 tar.gz"
             "darwin arm64 tar.gz"
+            "windows amd64 zip exe"
           )
 
           for target in "${targets[@]}"; do
