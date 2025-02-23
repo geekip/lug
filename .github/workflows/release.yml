@@ -37,11 +37,11 @@ jobs:
           mkdir -p release
           targets=(
             "linux amd64 tar.gz"
-            #"linux arm64 tar.gz"
-            #"darwin amd64 tar.gz"
-            #"darwin arm64 tar.gz"
-            #"windows amd64 zip exe"
-            #"windows arm64 zip exe"
+            "linux arm64 tar.gz"
+            "darwin amd64 tar.gz"
+            "darwin arm64 tar.gz"
+            "windows amd64 zip exe"
+            "windows arm64 zip exe"
           )
 
           for target in "${targets[@]}"; do
@@ -51,7 +51,7 @@ jobs:
             
             GOOS=$os GOARCH=$arch go build -o $binary_name . && upx $binary_name
             
-            package_name="${binary_name}_${VERSION}_${os}_${arch}"
+            package_name="${binary_name}-${VERSION}-${os}-${arch}"
             if [ "$format" == "zip" ]; then
               zip "release/${package_name}.zip" $binary_name
             else
