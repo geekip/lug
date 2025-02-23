@@ -121,11 +121,19 @@ Available options are:
 		}
 	}
 
-	// Execute script file
 	if scriptPath != "" {
-		if err := executeScript(L, scriptPath, optDumpAST, optDumpCode); err != nil {
-			return err
+		if optDumpAST || optDumpCode {
+			// Execute script file and Dump AST or VM Code
+			if err := executeDump(L, scriptPath, optDumpAST, optDumpCode); err != nil {
+				return err
+			}
+		} else {
+			// Execute script file
+			if err := L.DoFile(scriptPath); err != nil {
+				return err
+			}
 		}
+
 	}
 
 	// Enter interactive mode
@@ -187,46 +195,39 @@ func executeArgs(L *lua.LState, optExecute string) (string, string, *lua.LTable,
 	return scriptPath, packagePath, Largs, nil
 }
 
-func executeScript(L *lua.LState, scriptPath string, dumpAST, dumpVM bool) error {
+func executeDump(L *lua.LState, scriptPath string, dumpAST, dumpVM bool) error {
 
-	if dumpAST || dumpVM {
-
-		// Read script content once
-		file, err := os.Open(scriptPath)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
-
-		// Parse script content
-		chunk, err := parse.Parse(file, scriptPath)
-		if err != nil {
-			return err
-		}
-
-		// Dump AST if requested
-		if dumpAST {
-			fmt.Println(parse.Dump(chunk))
-		}
-
-		// Compile and optionally dump VM code
-		proto, err := lua.Compile(chunk, scriptPath)
-		if err != nil {
-			return err
-		}
-		if dumpVM {
-			fmt.Println(proto.String())
-		}
-
-		lFunc := L.NewFunctionFromProto(proto)
-		L.Push(lFunc)
-		return L.PCall(0, lua.MultRet, nil)
-	}
-	// Execute script
-	if err := L.DoFile(scriptPath); err != nil {
+	// Read script content once
+	file, err := os.Open(scriptPath)
+	if err != nil {
 		return err
 	}
-	return nil
+	defer file.Close()
+
+	// Parse script content
+	chunk, err := parse.Parse(file, scriptPath)
+	if err != nil {
+		return err
+	}
+
+	// Dump AST if requested
+	if dumpAST {
+		fmt.Println(parse.Dump(chunk))
+	}
+
+	// Compile and optionally dump VM code
+	proto, err := lua.Compile(chunk, scriptPath)
+	if err != nil {
+		return err
+	}
+
+	if dumpVM {
+		fmt.Println(proto.String())
+	}
+
+	lFunc := L.NewFunctionFromProto(proto)
+	L.Push(lFunc)
+	return L.PCall(0, lua.MultRet, nil)
 }
 
 // getExePath retrieves the path to the executable.
