@@ -57,7 +57,7 @@ jobs:
             else
               tar czvf "release/${package_name}.tar.gz" $binary_name
             fi
-            
+          
             rm -f $binary_name
           done
 
