@@ -7,6 +7,8 @@ on:
 jobs:
   build-release:
     runs-on: ubuntu-latest
+    permissions:
+        contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -35,11 +37,11 @@ jobs:
           mkdir -p release
           targets=(
             "linux amd64 tar.gz"
-            "linux arm64 tar.gz"
-            "darwin amd64 tar.gz"
-            "darwin arm64 tar.gz"
-            "windows amd64 zip exe"
-            "windows arm64 zip exe"
+            #"linux arm64 tar.gz"
+            #"darwin amd64 tar.gz"
+            #"darwin arm64 tar.gz"
+            #"windows amd64 zip exe"
+            #"windows arm64 zip exe"
           )
 
           for target in "${targets[@]}"; do
