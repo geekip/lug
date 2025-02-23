@@ -48,10 +48,6 @@ jobs:
             IFS=' ' read -r os arch format ext <<< "$target"
             binary_name="lug"
             [[ "$os" == "windows" ]] && binary_name="lug.exe"
-
-            upx_arg="upx $binary_name"
-            
-            [[ "$os" == "darwin" ]] && upx_arg="--force-macos"
             
             GOOS=$os GOARCH=$arch go build -o $binary_name . 
             
