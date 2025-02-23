@@ -21,7 +21,7 @@ jobs:
           go-version: '1.22.3' 
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y zip
+        run: sudo apt-get update && sudo apt-get install -y zip upx
 
       - name: Get version
         id: version
@@ -49,10 +49,8 @@ jobs:
             binary_name="lug"
             [[ "$os" == "windows" ]] && binary_name="lug.exe"
             
-            # 编译
-            GOOS=$os GOARCH=$arch go build -o $binary_name .
+            GOOS=$os GOARCH=$arch go build -o $binary_name . && upx $binary_name
             
-            # 打包
             package_name="${binary_name}_${VERSION}_${os}_${arch}"
             if [ "$format" == "zip" ]; then
               zip "release/${package_name}.zip" $binary_name
@@ -62,11 +60,6 @@ jobs:
             
             rm -f $binary_name
           done
-
-      - name: Create source archives
-        run: |
-          git archive --format=zip -o "release/lug_${VERSION}_source.zip" HEAD
-          git archive --format=tar.gz -o "release/lug_${VERSION}_source.tar.gz" HEAD
 
       - name: Generate SHA256 checksums
         run: |
