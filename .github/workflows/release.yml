@@ -16,15 +16,15 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.22.3'
+          go-version: '1.22.3' 
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y zip upx
+        run: sudo apt-get update && sudo apt-get install -y zip
 
       - name: Get version
         id: version
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=${GITHUB_REF#refs/tags/v}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
@@ -47,8 +47,10 @@ jobs:
             binary_name="lug"
             [[ "$os" == "windows" ]] && binary_name="lug.exe"
             
-            GOOS=$os GOARCH=$arch go build -o $binary_name .
+            # 编译
+            GOOS=$os GOARCH=$arch go build -o $binary_name ./cmd/lug
             
+            # 打包
             package_name="${binary_name}_${VERSION}_${os}_${arch}"
             if [ "$format" == "zip" ]; then
               zip "release/${package_name}.zip" $binary_name
@@ -58,6 +60,11 @@ jobs:
             
             rm -f $binary_name
           done
+
+      - name: Create source archives
+        run: |
+          git archive --format=zip -o "release/lug_${VERSION}_source.zip" HEAD
+          git archive --format=tar.gz -o "release/lug_${VERSION}_source.tar.gz" HEAD
 
       - name: Generate SHA256 checksums
         run: |
