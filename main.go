@@ -56,7 +56,6 @@ Available options are:
 `, PackageName)
 	}
 	flag.Parse()
-	nargs := flag.NArg()
 
 	// Setup CPU profiling
 	if optProfile != "" {
@@ -72,7 +71,7 @@ Available options are:
 	}
 
 	// Default to interactive mode if no options provided
-	if optExecute == "" && !optInteractive && !optVersion && nargs == 0 {
+	if optExecute == "" && !optInteractive && !optVersion && flag.NArg() == 0 {
 		optInteractive = true
 	}
 
@@ -123,7 +122,7 @@ Available options are:
 	}
 
 	// Execute script file
-	if nargs > 0 {
+	if scriptPath != "" {
 		if err := executeScript(L, scriptPath, optDumpAST, optDumpCode); err != nil {
 			return err
 		}
@@ -131,7 +130,9 @@ Available options are:
 
 	// Enter interactive mode
 	if optInteractive {
-		doREPL(L)
+		if err := doREPL(L); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -154,16 +155,13 @@ func executeArgs(L *lua.LState, optExecute string) (string, string, *lua.LTable,
 	hArgs := []string{exePath}
 
 	// Determine script source
-	var scriptPath string
 	if optExecute != "" {
 		hArgs = append(hArgs, optExecute)
 	}
 
+	var scriptPath string
 	args := flag.Args()
-	nargs := flag.NArg()
-
-	var packagePath string
-	if nargs > 0 {
+	if flag.NArg() > 0 {
 		scriptPath = filepath.Clean(args[0])
 		if !filepath.IsAbs(scriptPath) {
 			scriptPath = filepath.Join(workDir, scriptPath)
@@ -184,7 +182,7 @@ func executeArgs(L *lua.LState, optExecute string) (string, string, *lua.LTable,
 	}
 
 	// Get Lua package path
-	packagePath = `package.path='` + workDir + `/?.lua;'..package.path`
+	packagePath := `package.path='` + workDir + `/?.lua;'..package.path`
 
 	return scriptPath, packagePath, Largs, nil
 }
@@ -192,6 +190,7 @@ func executeArgs(L *lua.LState, optExecute string) (string, string, *lua.LTable,
 func executeScript(L *lua.LState, scriptPath string, dumpAST, dumpVM bool) error {
 
 	if dumpAST || dumpVM {
+
 		// Read script content once
 		file, err := os.Open(scriptPath)
 		if err != nil {
@@ -211,15 +210,18 @@ func executeScript(L *lua.LState, scriptPath string, dumpAST, dumpVM bool) error
 		}
 
 		// Compile and optionally dump VM code
+		proto, err := lua.Compile(chunk, scriptPath)
+		if err != nil {
+			return err
+		}
 		if dumpVM {
-			proto, err := lua.Compile(chunk, scriptPath)
-			if err != nil {
-				return err
-			}
 			fmt.Println(proto.String())
 		}
-	}
 
+		lFunc := L.NewFunctionFromProto(proto)
+		L.Push(lFunc)
+		return L.PCall(0, lua.MultRet, nil)
+	}
 	// Execute script
 	if err := L.DoFile(scriptPath); err != nil {
 		return err
@@ -248,10 +250,10 @@ func getExePath() (string, error) {
 }
 
 // doREPL implements the Read-Eval-Print Loop (REPL).
-func doREPL(L *lua.LState) {
+func doREPL(L *lua.LState) error {
 	rl, err := readline.New("> ")
 	if err != nil {
-		panic(err)
+		return err
 	}
 	defer rl.Close()
 
@@ -268,6 +270,7 @@ func doREPL(L *lua.LState) {
 			fmt.Println(err)
 		}
 	}
+	return nil
 }
 
 // loadline reads a single line of input and handles multiline fallback.

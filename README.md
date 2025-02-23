@@ -1,6 +1,5 @@
 # geekip/lug
-Package contains is a libs for gopher-lua.
-
+Package contains is a libs for [gopher-lua](https://github.com/yuin/gopher-lua).
 
 ## Features
 
@@ -13,27 +12,42 @@ Package contains is a libs for gopher-lua.
 
 # Install
 ``` shell
-git clone git@github.com:geekip/golu.git
+git clone git@github.com:geekip/lug.git
 go build .
 ```
 
 # Usage
+```
+$ lug -h
+
+Usage: lug [options] [script [args]]
+Available options are:
+  -e stat  execute string 'stat'
+  -i       enter interactive mode after executing 'script'
+  -l name  require library 'name'
+  -m MB    memory limit (default: unlimited)
+  -dt      dump AST trees
+  -dc      dump VM codes
+  -p file  write cpu profile to the file
+  -v       show version information
+```
 
 ``` shell
-# run lua file, default ./main.lua
-golu 
-
 # specify file
-golu -file path/to/test.lua
-
-# Custom Parameters
-golu -f foo -b bar -n 666
+lug /code/lua/test.lua foo bar 123
 ```
 ``` lua
--- main.lua
-print(arg["f"]) -- foo
-print(arg["b"]) -- bar
-print(arg["n"]) -- 666
+-- /code/lua/test.lua
+
+for k, v in pairs(arg) do 
+  print(k, v) 
+end
+
+-- -1 /usr/bin/lug
+-- 0  /code/lua/test.lua
+-- 1  foo
+-- 2  bar
+-- 3  123
 ```
 
 #  Built in Library
@@ -93,11 +107,11 @@ local result = fs.cwdir()
 if not(result == "/root") then error("cwdir") end
 
 -- fs.symlink(target, link)
-local result = fs.symlink("/root/golu","/usr/bin/golu")
+local result = fs.symlink("/root/lug","/usr/bin/lug")
 if not result then error("symlink") end
 
 -- fs.exists(path)
-local result = fs.exists("/root/golu")
+local result = fs.exists("/root/lug")
 if not result then error("exists") end
 
 -- fs.glob(pattern)
@@ -113,11 +127,11 @@ local result = fs.clean("/foo/..bar/.baz")
 if not(result == "/foo/baz") then error("clean") end
 
 -- fs.abspath(path)
-local result = fs.abspath("./golu")
-if not(result == "/root/golu") then error("abspath") end
+local result = fs.abspath("./test")
+if not(result == "/root/test") then error("abspath") end
 
 -- fs.isabs(path)
-local result = fs.isabs("/root/golu")
+local result = fs.isabs("/root/test")
 if not result then error("isabs") end
 
 ```
