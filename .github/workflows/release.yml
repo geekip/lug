@@ -47,9 +47,9 @@ jobs:
             binary_name="lug"
             [[ "$os" == "windows" ]] && binary_name="lug.exe"
             
-            GOOS=$os GOARCH=$arch go build -o $binary_name . && upx $binary_name
+            GOOS=$os GOARCH=$arch go build -o $binary_name .
             
-            package_name="lug_${VERSION}_${os}_${arch}"
+            package_name="${binary_name}_${VERSION}_${os}_${arch}"
             if [ "$format" == "zip" ]; then
               zip "release/${package_name}.zip" $binary_name
             else
