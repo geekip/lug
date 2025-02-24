@@ -189,9 +189,11 @@ func executeArgs(L *lua.LState, optExecute string) (string, string, *lua.LTable,
 		Largs.RawSet(lua.LNumber(i-hLen), lua.LString(arg))
 	}
 
-	// Get Lua package path
-	packagePath := `package.path='` + workDir + `/?.lua;'..package.path`
+	// Fix path issues in Windows
+	workDir = filepath.ToSlash(workDir)
 
+	// Get Lua package path
+	packagePath := "package.path='" + workDir + "/?.lua;'..package.path"
 	return scriptPath, packagePath, Largs, nil
 }
 
