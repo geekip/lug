@@ -1,11 +1,11 @@
-package main
+package template
 
 import (
 	"bytes"
-	"fmt"
 	"sync"
 	"text/template"
 
+	"github.com/geekip/lug/util"
 	lua "github.com/yuin/gopher-lua"
 )
 
@@ -17,7 +17,7 @@ type templateEntry struct {
 
 var templateCache sync.Map
 
-func templateLoader(L *lua.LState) int {
+func Loader(L *lua.LState) int {
 	api := map[string]lua.LGFunction{
 		"file":   apiRenderFile,
 		"string": apiRenderString,
@@ -52,14 +52,13 @@ func apiRenderString(L *lua.LState) int {
 		L.Push(lua.LString(err.Error()))
 		return 2
 	}
-
 	return renderTemplate(L, tmpl)
 }
 
 func renderTemplate(L *lua.LState, tmpl *template.Template) int {
 	var data interface{}
 	if L.GetTop() >= 2 {
-		data = toGoValue(L.CheckTable(2))
+		data = util.ToGoValue(L.CheckTable(2))
 	}
 
 	var buf bytes.Buffer
@@ -71,36 +70,4 @@ func renderTemplate(L *lua.LState, tmpl *template.Template) int {
 
 	L.Push(lua.LString(buf.String()))
 	return 1
-}
-
-func toGoValue(lv lua.LValue) interface{} {
-	switch v := lv.(type) {
-	case *lua.LNilType:
-		return nil
-	case lua.LBool:
-		return bool(v)
-	case lua.LString:
-		return string(v)
-	case lua.LNumber:
-		return float64(v)
-	case *lua.LTable:
-		maxIndex := v.MaxN()
-		// table
-		if maxIndex == 0 {
-			ret := make(map[interface{}]interface{})
-			v.ForEach(func(key, value lua.LValue) {
-				keystr := fmt.Sprint(toGoValue(key))
-				ret[keystr] = toGoValue(value)
-			})
-			return ret
-		}
-		// array
-		ret := make([]interface{}, 0, maxIndex)
-		for i := 1; i <= maxIndex; i++ {
-			ret = append(ret, toGoValue(v.RawGetInt(i)))
-		}
-		return ret
-	default:
-		return v
-	}
 }

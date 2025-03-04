@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/chzyer/readline"
+	pkg "github.com/geekip/lug/package"
 	lua "github.com/yuin/gopher-lua"
 	"github.com/yuin/gopher-lua/parse"
 )
@@ -53,7 +54,7 @@ Available options are:
   -dc      dump VM codes
   -p file  write cpu profile to the file
   -v       show version information
-`, PackageName)
+`, pkg.Name)
 	}
 	flag.Parse()
 
@@ -98,13 +99,11 @@ Available options are:
 	L.SetGlobal("arg", arg)
 
 	// Preload Lua modules
-	for name, fn := range luaLibs {
-		L.PreloadModule(name, fn)
-	}
+	Preload(L)
 
 	// Show version information
 	if optVersion || optInteractive {
-		fmt.Println(PackageCopyRight)
+		fmt.Println(pkg.CopyRight)
 	}
 
 	// Load library if specified

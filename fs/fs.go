@@ -1,4 +1,4 @@
-package main
+package fs
 
 import (
 	"fmt"
@@ -13,28 +13,30 @@ import (
 
 var fileLocks sync.Map
 
-func fsLoader(L *lua.LState) int {
+func Loader(L *lua.LState) int {
 	api := map[string]lua.LGFunction{
-		"mkdir":    mkdir,
-		"copy":     copyFile,
-		"chmod":    chmod,
-		"move":     moveFile,
-		"remove":   remove,
-		"read":     read,
-		"write":    write,
-		"isdir":    isdir,
-		"dirname":  dirname,
-		"basename": basename,
-		"exedir":   exedir,
-		"cwdir":    cwdir,
-		"symlink":  symlink,
-		"ext":      ext,
-		"exists":   exists,
-		"glob":     glob,
-		"join":     join,
-		"clean":    clean,
-		"abspath":  abspath,
-		"isabs":    isabs,
+		"mkdir":     mkdir,
+		"copy":      copyFile,
+		"chmod":     chmod,
+		"move":      moveFile,
+		"remove":    remove,
+		"read":      read,
+		"write":     write,
+		"isdir":     isdir,
+		"dirname":   dirname,
+		"basename":  basename,
+		"exedir":    exedir,
+		"cwdir":     cwdir,
+		"symlink":   symlink,
+		"ext":       ext,
+		"exists":    exists,
+		"glob":      glob,
+		"join":      join,
+		"clean":     clean,
+		"abspath":   abspath,
+		"isabs":     isabs,
+		"fromSlash": fromSlash,
+		"toSlash":   toSlash,
 	}
 	L.Push(L.SetFuncs(L.NewTable(), api))
 	return 1
@@ -312,6 +314,18 @@ func chmod(L *lua.LState) int {
 		return pushError(L, err)
 	}
 	L.Push(lua.LTrue)
+	return 1
+}
+
+func fromSlash(L *lua.LState) int {
+	path := L.CheckString(1)
+	L.Push(lua.LString(filepath.FromSlash(path)))
+	return 1
+}
+
+func toSlash(L *lua.LState) int {
+	path := L.CheckString(1)
+	L.Push(lua.LString(filepath.ToSlash(path)))
 	return 1
 }
 
