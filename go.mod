@@ -1,4 +1,4 @@
-module github.com/geekip/lug
+module lug
 
 go 1.23.4
 

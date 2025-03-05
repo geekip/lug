@@ -1,41 +1,41 @@
-package thread
+package libs
 
 import (
 	"fmt"
 	"sync"
 
-	"github.com/geekip/lug/util"
+	"lug/util"
+
 	lua "github.com/yuin/gopher-lua"
 )
 
 type (
-	module struct {
+	Thread struct {
 		util.Module
 		wg *sync.WaitGroup
 	}
 )
 
-func Loader(L *lua.LState) int {
+func ThreadLoader(L *lua.LState) int {
 	mod := util.GetModule(L)
-	api := util.LGFunctions{"new": new}
+	api := util.LGFunctions{"new": newThread}
 	return mod.Api(api)
 }
 
-func new(L *lua.LState) int {
-	mod := &module{
-		util.GetModule(L),
-		&sync.WaitGroup{},
+func newThread(L *lua.LState) int {
+	mod := &Thread{
+		Module: *util.GetModule(L),
+		wg:     &sync.WaitGroup{},
 	}
-
 	api := util.LGFunctions{
 		"wait": mod.wait,
 		"run":  mod.run,
 	}
-
 	return mod.Api(api)
 }
 
-func (m *module) run(L *lua.LState) int {
+func (m *Thread) run(L *lua.LState) int {
+
 	callback := L.CheckFunction(1)
 	m.wg.Add(1)
 
@@ -51,10 +51,10 @@ func (m *module) run(L *lua.LState) int {
 			return
 		}
 	}()
-	return m.This()
+	return m.Self()
 }
 
-func (m *module) wait(L *lua.LState) int {
+func (m *Thread) wait(L *lua.LState) int {
 	m.wg.Wait()
-	return m.This()
+	return m.Self()
 }

@@ -1,50 +1,133 @@
-package db
+package libs
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/geekip/lug/util"
+	"lug/util"
+
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/mattn/go-sqlite3"
 	lua "github.com/yuin/gopher-lua"
 )
 
+type DB struct {
+	util.Module
+	db      *sql.DB
+	table   string
+	fields  string
+	where   string
+	groupBy string
+	having  string
+	orderBy string
+	limit   string
+	args    []interface{}
+}
+
+func DbLoader(L *lua.LState) int {
+	mod := util.GetModule(L)
+	api := util.LGFunctions{"open": newDB}
+	return mod.Api(api)
+}
+
+func newDB(L *lua.LState) int {
+	Type := L.CheckString(1)
+	dsn := L.CheckString(2)
+
+	var db *sql.DB
+	var err error
+
+	switch Type {
+	case "sqlite":
+		db, err = sql.Open("sqlite3", dsn)
+	case "mysql":
+		db, err = sql.Open("mysql", dsn)
+	default:
+		err = fmt.Errorf("unsupported database type: %s", Type)
+	}
+
+	if err != nil {
+		L.Push(lua.LNil)
+		L.Push(lua.LString(err.Error()))
+		return 2
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err = db.PingContext(ctx); err != nil {
+		L.Push(lua.LNil)
+		L.Push(lua.LString(err.Error()))
+		return 2
+	}
+
+	mod := &DB{
+		Module: *util.GetModule(L),
+		db:     db,
+	}
+
+	api := util.LGFunctions{
+		"table":  mod.Table,
+		"field":  mod.Field,
+		"where":  mod.Where,
+		"group":  mod.Group,
+		"having": mod.Having,
+		"order":  mod.Order,
+		"limit":  mod.Limit,
+		"query":  mod.Query,
+		"exec":   mod.Exec,
+		"insert": mod.Insert,
+		"update": mod.Update,
+		"delete": mod.Delete,
+		"find":   mod.Find,
+		"select": mod.Select,
+		"count":  mod.Count,
+		"close":  mod.Close,
+	}
+
+	return mod.Api(api)
+}
+
 func (d *DB) Table(L *lua.LState) int {
 	d.table = L.CheckString(1)
-	return d.This()
+	return d.Self()
 }
 
 func (d *DB) Field(L *lua.LState) int {
 	d.fields = L.CheckString(1)
-	return d.This()
+	return d.Self()
 }
 
 func (d *DB) Where(L *lua.LState) int {
 	query, args := d.getNativeQuery()
 	d.where = query
 	d.args = append(d.args, args...)
-	return d.This()
+	return d.Self()
 }
 
 func (d *DB) Group(L *lua.LState) int {
 	d.groupBy = L.CheckString(1)
-	return d.This()
+	return d.Self()
 }
 
 func (d *DB) Having(L *lua.LState) int {
 	d.having = L.CheckString(1)
-	return d.This()
+	return d.Self()
 }
 
 func (d *DB) Order(L *lua.LState) int {
 	d.orderBy = L.CheckString(1)
-	return d.This()
+	return d.Self()
 }
 
 func (d *DB) Limit(L *lua.LState) int {
 	d.limit = strconv.Itoa(L.CheckInt(1))
-	return d.This()
+	return d.Self()
 }
 
 func (d *DB) Close(L *lua.LState) int {
@@ -54,22 +137,22 @@ func (d *DB) Close(L *lua.LState) int {
 
 func (d *DB) Query(L *lua.LState) int {
 	query, args := d.getNativeQuery()
-	return d._query(query, args, true)
+	return d.query(query, args, true)
 }
 
 func (d *DB) Select(L *lua.LState) int {
 	query, args := d.getConditionalQuery()
-	return d._query(query, args, true)
+	return d.query(query, args, true)
 }
 
 func (d *DB) Find(L *lua.LState) int {
 	query, args := d.getConditionalQuery()
-	return d._query(query, args, false)
+	return d.query(query, args, false)
 }
 
 func (d *DB) Exec(L *lua.LState) int {
 	query, args := d.getNativeQuery()
-	return d._exec(query, args)
+	return d.exec(query, args)
 }
 
 func (d *DB) Insert(L *lua.LState) int {
@@ -95,12 +178,12 @@ func (d *DB) Insert(L *lua.LState) int {
 
 	result, err := d.db.Exec(query, values...)
 	if err != nil {
-		return d.error(err.Error())
+		return d.Error(err)
 	}
 
 	id, err := result.LastInsertId()
 	if err != nil {
-		return d.error(err.Error())
+		return d.Error(err)
 	}
 
 	return d.Push(lua.LNumber(id))
@@ -110,7 +193,7 @@ func (d *DB) Update(L *lua.LState) int {
 	data := L.CheckTable(1)
 	dataLen := data.Len()
 	if d.where == "" {
-		return d.error("update requires WHERE clause")
+		return d.Error(errors.New("update requires WHERE clause"))
 	}
 	sets := make([]string, 0, dataLen)
 	values := make([]interface{}, 0, dataLen)
@@ -127,15 +210,15 @@ func (d *DB) Update(L *lua.LState) int {
 		strings.Join(sets, ", "),
 		d.where,
 	)
-	return d._exec(query, values)
+	return d.exec(query, values)
 }
 
 func (d *DB) Delete(L *lua.LState) int {
 	if d.where == "" {
-		return d.error("delete requires WHERE clause")
+		return d.Error(errors.New("delete requires WHERE clause"))
 	}
 	query := fmt.Sprintf("DELETE FROM %s WHERE %s", d.table, d.where)
-	return d._exec(query, d.args)
+	return d.exec(query, d.args)
 }
 
 func (d *DB) Count(L *lua.LState) int {
@@ -144,34 +227,33 @@ func (d *DB) Count(L *lua.LState) int {
 	var count int64
 	err := d.db.QueryRow(originalQuery, args...).Scan(&count)
 	if err != nil {
-		return d.error(err.Error())
+		return d.Error(err)
 	}
 	return d.Push(lua.LNumber(count))
 }
 
-func (d *DB) _exec(query string, args []interface{}) int {
+func (d *DB) exec(query string, args []interface{}) int {
 	result, err := d.db.Exec(query, args...)
 	if err != nil {
-		return d.error(err.Error())
+		return d.Error(err)
 	}
-
 	count, err := result.RowsAffected()
 	if err != nil {
-		return d.error(err.Error())
+		return d.Error(err)
 	}
 	return d.Push(lua.LNumber(count))
 }
 
-func (d *DB) _query(query string, args []interface{}, isAll bool) int {
+func (d *DB) query(query string, args []interface{}, isAll bool) int {
 	rows, err := d.db.Query(query, args...)
 	if err != nil {
-		return d.error(err.Error())
+		return d.Error(err)
 	}
 	defer rows.Close()
 
 	columns, err := rows.Columns()
 	if err != nil {
-		return d.error(err.Error())
+		return d.Error(err)
 	}
 
 	var results *lua.LTable
@@ -180,17 +262,17 @@ func (d *DB) _query(query string, args []interface{}, isAll bool) int {
 		for rows.Next() {
 			rowTable, err := d.makeRow(rows, columns)
 			if err != nil {
-				return d.error(err.Error())
+				return d.Error(err)
 			}
 			results.Append(rowTable)
 		}
 	} else {
 		if !rows.Next() {
-			return d.error(sql.ErrNoRows.Error())
+			return d.Error(sql.ErrNoRows)
 		}
 		results, err = d.makeRow(rows, columns)
 		if err != nil {
-			return d.error(err.Error())
+			return d.Error(err)
 		}
 	}
 	return d.Push(results)
@@ -264,10 +346,4 @@ func (d *DB) getConditionalQuery() (string, []interface{}) {
 	d.args = nil
 
 	return query, args
-}
-
-func (d *DB) error(err string) int {
-	d.VmState.Push(lua.LNil)
-	d.VmState.Push(lua.LString(err))
-	return 2
 }

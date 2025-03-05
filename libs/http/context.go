@@ -6,11 +6,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/geekip/lug/util"
+	"lug/util"
+
 	lua "github.com/yuin/gopher-lua"
 )
 
 type Context struct {
+	// util.Module
 	Request  *http.Request
 	Response http.ResponseWriter
 	Method   lua.LString

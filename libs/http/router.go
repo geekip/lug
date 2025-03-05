@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	pkg "github.com/geekip/lug/package"
+	pkg "lug/package"
 )
 
 type (
@@ -33,60 +33,60 @@ func newRouter() *Router {
 	return &Router{node: newNode()}
 }
 
-func (m *Router) pathJoin(pattern string) string {
+func (r *Router) pathJoin(pattern string) string {
 	if pattern == "" {
-		return m.prefix
+		return r.prefix
 	}
-	finalPath := path.Join(m.prefix, pattern)
+	finalPath := path.Join(r.prefix, pattern)
 	if strings.HasSuffix(pattern, "/") && !strings.HasSuffix(finalPath, "/") {
 		return finalPath + "/"
 	}
 	return finalPath
 }
 
-func (m *Router) group(pattern string) *Router {
+func (r *Router) group(pattern string) *Router {
 	return &Router{
-		prefix:      m.pathJoin(pattern),
-		node:        m.node,
-		middlewares: m.middlewares,
+		prefix:      r.pathJoin(pattern),
+		node:        r.node,
+		middlewares: r.middlewares,
 	}
 }
 
-func (m *Router) use(middlewares ...Handler) *Router {
+func (r *Router) use(middlewares ...Handler) *Router {
 	if len(middlewares) == 0 {
 		panic(errors.New("prue mux unkown middleware"))
 	}
-	m.middlewares = append(m.middlewares, middlewares...)
-	return m
+	r.middlewares = append(r.middlewares, middlewares...)
+	return r
 }
 
-func (m *Router) method(methods ...string) *Router {
+func (r *Router) method(methods ...string) *Router {
 	if len(methods) == 0 {
 		panic(errors.New("http server unkown http method"))
 	}
-	m.methods = append(m.methods, methods...)
-	return m
+	r.methods = append(r.methods, methods...)
+	return r
 }
 
-func (m *Router) handle(pattern string, handler Handler) *Router {
-	fullPattern := m.pathJoin(pattern)
-	if len(m.methods) == 0 {
-		m.methods = append(m.methods, "*")
+func (r *Router) handle(pattern string, handler Handler) *Router {
+	fullPattern := r.pathJoin(pattern)
+	if len(r.methods) == 0 {
+		r.methods = append(r.methods, "*")
 	}
-	for _, method := range m.methods {
+	for _, method := range r.methods {
 		method = strings.ToUpper(method)
-		_, err := m.node.add(method, fullPattern, handler, m.middlewares)
+		_, err := r.node.add(method, fullPattern, handler, r.middlewares)
 		if err != nil {
 			panic(err)
 		}
 	}
-	m.methods = nil
-	return m
+	r.methods = nil
+	return r
 }
 
-func (m *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
-	ctx := newContext(w, r)
+	ctx := newContext(w, req)
 	defer func() {
 		if err := recover(); err != nil {
 			ctx.Error("500 internal server error", http.StatusInternalServerError)
@@ -99,7 +99,7 @@ func (m *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var handler Handler
-	node := m.node.find(r.Method, r.URL.Path)
+	node := r.node.find(req.Method, req.URL.Path)
 	if node == nil {
 		ctx.Error("404 page not found", http.StatusNotFound)
 		return
@@ -113,7 +113,7 @@ func (m *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(node.middlewares) > 0 {
-		handler = m.withMiddleware(node.middlewares, handler)
+		handler = r.withMiddleware(node.middlewares, handler)
 	}
 
 	body := handler(ctx)
@@ -127,7 +127,7 @@ func (m *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Apply Middleware
-func (m *Router) withMiddleware(middlewares []Handler, handler Handler) Handler {
+func (r *Router) withMiddleware(middlewares []Handler, handler Handler) Handler {
 	count := len(middlewares)
 	// Insert the handler at the end of the middleware
 	middlewares = append(middlewares, handler)

@@ -8,81 +8,53 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
-	"github.com/geekip/lug/util"
+	"lug/util"
+
 	lua "github.com/yuin/gopher-lua"
 )
 
 type Server struct {
+	util.Module
 	router *Router
 }
 
-var statePool = sync.Pool{
-	New: func() interface{} {
-		return lua.NewState()
-	},
+func ServerLoader(L *lua.LState) *lua.LTable {
+	mod := newServer(L, newRouter())
+	mod.Prototype.RawSetString("listen", L.NewFunction(mod.listen))
+	mod.Prototype.RawSetString("group", L.NewFunction(mod.group))
+	return mod.Prototype
 }
 
-func Loader(L *lua.LState) *lua.LTable {
-	server := newServer(newRouter())
-	mod := server.createMod(L)
-	mod.RawSetString("listen", L.NewFunction(server.listen))
-	mod.RawSetString("group", L.NewFunction(server.group))
-	return mod
-}
-
-func (s *Server) createMod(L *lua.LState) *lua.LTable {
-	mod := L.NewTable()
-	api := map[string]lua.LGFunction{
-		"handle":  s.handle,
-		"use":     s.use,
-		"any":     s.method("*"),
-		"connect": s.method(http.MethodConnect),
-		"delete":  s.method(http.MethodDelete),
-		"get":     s.method(http.MethodGet),
-		"head":    s.method(http.MethodHead),
-		"options": s.method(http.MethodOptions),
-		"patch":   s.method(http.MethodPatch),
-		"post":    s.method(http.MethodPost),
-		"put":     s.method(http.MethodPut),
-		"trace":   s.method(http.MethodTrace),
+func newServer(L *lua.LState, router *Router) *Server {
+	mod := &Server{
+		Module: *util.GetModule(L),
+		router: router,
 	}
-	for name, fn := range api {
-		mod.RawSetString(name, L.NewFunction(fn))
+	api := util.LGFunctions{
+		"handle":  mod.handle,
+		"use":     mod.use,
+		"any":     mod.method("*"),
+		"connect": mod.method(http.MethodConnect),
+		"delete":  mod.method(http.MethodDelete),
+		"get":     mod.method(http.MethodGet),
+		"head":    mod.method(http.MethodHead),
+		"options": mod.method(http.MethodOptions),
+		"patch":   mod.method(http.MethodPatch),
+		"post":    mod.method(http.MethodPost),
+		"put":     mod.method(http.MethodPut),
+		"trace":   mod.method(http.MethodTrace),
 	}
+	mod.Api(api)
 	return mod
-}
-
-func newServer(router *Router) *Server {
-	return &Server{router: router}
 }
 
 func (s *Server) group(L *lua.LState) int {
 	pattern := L.CheckString(1)
-	server := newServer(s.router.group(pattern))
-	mod := server.createMod(L)
-	L.Push(mod)
-	return 1
-}
-
-func (s *Server) method(method string) lua.LGFunction {
-	return func(L *lua.LState) int {
-		return s.handleRoute(L, method)
-	}
-}
-
-func (s *Server) handle(L *lua.LState) int {
-	return s.handleRoute(L, L.CheckString(1))
-}
-
-func (s *Server) handleRoute(L *lua.LState, method string) int {
-	path := L.CheckString(1)
-	handler := L.CheckFunction(2)
-	s.router.method(method).handle(path, s.createLuaHandler(L, handler))
-	return 0
+	mod := newServer(L, s.router.group(pattern))
+	return mod.Self()
 }
 
 func (s *Server) use(L *lua.LState) int {
@@ -90,26 +62,37 @@ func (s *Server) use(L *lua.LState) int {
 	handlers := make([]Handler, n)
 	for i := 1; i <= n; i++ {
 		handler := L.CheckFunction(i)
-		handlers[i-1] = s.createLuaHandler(L, handler)
+		handlers[i-1] = s.createLuaHandler(handler)
 	}
 	s.router.use(handlers...)
-	return 0
+	return s.Self()
 }
 
-func (s *Server) createLuaHandler(L *lua.LState, handler *lua.LFunction) Handler {
-	return func(ctx *Context) string {
-		state := statePool.Get().(*lua.LState)
-		defer func() {
-			state.SetTop(0) // 清空栈
-			statePool.Put(state)
-		}()
+func (s *Server) method(method string) lua.LGFunction {
+	return func(L *lua.LState) int {
+		return s.handleRoute(method)
+	}
+}
 
-		ctxApi := ctx.newContextApi(L)
-		if err := util.CallLua(state, handler, ctxApi); err != nil {
+func (s *Server) handle(L *lua.LState) int {
+	return s.handleRoute(L.CheckString(1))
+}
+
+func (s *Server) handleRoute(method string) int {
+	path := s.VmState.CheckString(1)
+	handler := s.VmState.CheckFunction(2)
+	s.router.method(method).handle(path, s.createLuaHandler(handler))
+	return s.Self()
+}
+
+func (s *Server) createLuaHandler(handler *lua.LFunction) Handler {
+	return func(ctx *Context) string {
+		s.VmState.SetTop(0) // 清空栈
+		ctxApi := ctx.newContextApi(s.VmState)
+		if err := util.CallLua(s.VmState, handler, ctxApi); err != nil {
 			ctx.Error(err.Error(), http.StatusInternalServerError)
 		}
-
-		return state.Get(-1).String()
+		return s.VmState.Get(-1).String()
 	}
 }
 

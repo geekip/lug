@@ -1,32 +1,39 @@
-package utf8
+package libs
 
 import (
+	"lug/util"
 	"unicode/utf8"
 	"unsafe"
 
 	lua "github.com/yuin/gopher-lua"
 )
 
+type Utf8 struct{ util.Module }
+
 var Utf8charpattern = lua.LString([]byte{
 	'[', 0, '-', 0x7f, 0xc2, '-', 0xf4, ']',
 	'[', 0x80, '-', 0xbf, ']', '*',
 })
 
-func Loader(L *lua.LState) int {
-	api := map[string]lua.LGFunction{
-		"char":      Utf8char,
-		"codes":     Utf8codes,
-		"codepoint": Utf8codepoint,
-		"len":       Utf8len,
-		"offset":    Utf8offset,
+func Uft8Loader(L *lua.LState) int {
+
+	mod := &Utf8{
+		Module: *util.GetModule(L),
 	}
-	mod := L.SetFuncs(L.CreateTable(0, 6), api)
-	mod.RawSetString("charpattern", Utf8charpattern)
-	L.Push(mod)
-	return 1
+	mod.Prototype.RawSetString("charpattern", Utf8charpattern)
+
+	api := util.LGFunctions{
+		"char":      mod.char,
+		"codes":     mod.codes,
+		"codepoint": mod.codepoint,
+		"len":       mod.len,
+		"offset":    mod.offset,
+	}
+
+	return mod.Api(api)
 }
 
-func Utf8char(ls *lua.LState) int {
+func (u *Utf8) char(ls *lua.LState) int {
 	args := ls.GetTop()
 	b := make([]byte, 0, args)
 	for i := 1; i <= args; i += 1 {
@@ -36,11 +43,11 @@ func Utf8char(ls *lua.LState) int {
 		}
 		b = utf8.AppendRune(b, r)
 	}
-	ls.Push(lua.LString(unsafe.String(unsafe.SliceData(b), len(b))))
-	return 1
+	char := unsafe.String(unsafe.SliceData(b), len(b))
+	return u.Push(lua.LString(char))
 }
 
-func utf8iter(ls *lua.LState) int {
+func (u *Utf8) iter(ls *lua.LState) int {
 	s := ls.CheckString(1)
 	n := ls.CheckInt(2) - 1
 	if n < 0 {
@@ -60,20 +67,17 @@ func utf8iter(ls *lua.LState) int {
 	if r == utf8.RuneError {
 		ls.RaiseError("invalid UTF-8 code")
 	}
-	ls.Push(lua.LNumber(n + 1))
-	ls.Push(lua.LNumber(r))
-	return 2
+	return u.Push(lua.LNumber(n+1), lua.LNumber(r))
 }
 
-func Utf8codes(ls *lua.LState) int {
-	s := ls.CheckString(1)
-	ls.Push(ls.NewFunction(utf8iter))
-	ls.Push(lua.LString(s))
-	ls.Push(lua.LNumber(0))
-	return 3
+func (u *Utf8) codes(ls *lua.LState) int {
+	s := lua.LString(ls.CheckString(1))
+	iter := ls.NewFunction(u.iter)
+	n := lua.LNumber(0)
+	return u.Push(iter, s, n)
 }
 
-func Utf8codepoint(ls *lua.LState) int {
+func (u *Utf8) codepoint(ls *lua.LState) int {
 	s := ls.CheckString(1)
 	i := ls.OptInt(2, 1)
 	j := ls.OptInt(3, i)
@@ -106,7 +110,7 @@ func Utf8codepoint(ls *lua.LState) int {
 	}
 }
 
-func Utf8len(ls *lua.LState) int {
+func (u *Utf8) len(ls *lua.LState) int {
 	s := ls.CheckString(1)
 	i := int(ls.OptNumber(2, 1))
 	j := int(ls.OptNumber(3, -1))
@@ -121,21 +125,18 @@ func Utf8len(ls *lua.LState) int {
 	l := 0
 	for {
 		if i >= j {
-			ls.Push(lua.LNumber(l))
-			return 1
+			return u.Push(lua.LNumber(l))
 		}
 		l += 1
 		r, size := utf8.DecodeRuneInString(s[i:])
 		if r == utf8.RuneError {
-			ls.Push(lua.LFalse)
-			ls.Push(lua.LNumber(i + 1))
-			return 2
+			return u.Push(lua.LFalse, lua.LNumber(i+1))
 		}
 		i += size
 	}
 }
 
-func Utf8offset(ls *lua.LState) int {
+func (u *Utf8) offset(ls *lua.LState) int {
 	s := ls.CheckString(1)
 	n := ls.CheckInt(2)
 	var i int
@@ -162,8 +163,7 @@ func Utf8offset(ls *lua.LState) int {
 				i -= 1
 			}
 		}
-		ls.Push(lua.LNumber(i + 1))
-		return 1
+		return u.Push(lua.LNumber(i + 1))
 	} else if i < len(s) && !utf8.RuneStart(s[i]) {
 		ls.RaiseError("initial position is a continuation byte")
 	}
@@ -172,8 +172,7 @@ func Utf8offset(ls *lua.LState) int {
 		n -= 1
 		for {
 			if n == 0 {
-				ls.Push(lua.LNumber(i + 1))
-				return 1
+				return u.Push(lua.LNumber(i + 1))
 			}
 			if i >= len(s) {
 				break
@@ -181,9 +180,7 @@ func Utf8offset(ls *lua.LState) int {
 			n -= 1
 			r, size := utf8.DecodeRuneInString(s[i:])
 			if r == utf8.RuneError {
-				ls.Push(lua.LFalse)
-				ls.Push(lua.LNumber(i + 1))
-				return 2
+				return u.Push(lua.LFalse, lua.LNumber(i+1))
 			}
 			i += size
 		}
@@ -195,17 +192,13 @@ func Utf8offset(ls *lua.LState) int {
 			n += 1
 			r, size := utf8.DecodeLastRuneInString(s[:i])
 			if r == utf8.RuneError {
-				ls.Push(lua.LFalse)
-				ls.Push(lua.LNumber(i + 1))
-				return 2
+				return u.Push(lua.LFalse, lua.LNumber(i+1))
 			}
 			i -= size
 			if n == 0 {
-				ls.Push(lua.LNumber(i + 1))
-				return 1
+				return u.Push(lua.LNumber(i + 1))
 			}
 		}
 	}
-	ls.Push(lua.LNil)
-	return 1
+	return u.Push(lua.LNil)
 }

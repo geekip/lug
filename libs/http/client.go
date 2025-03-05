@@ -11,9 +11,13 @@ import (
 	"strings"
 	"time"
 
-	pkg "github.com/geekip/lug/package"
+	pkg "lug/package"
+	"lug/util"
+
 	lua "github.com/yuin/gopher-lua"
 )
+
+type Client struct{ util.Module }
 
 type requestParams struct {
 	userAgent   string
@@ -32,68 +36,64 @@ type response struct {
 	body    lua.LString
 }
 
-func Loader(L *lua.LState) *lua.LTable {
-	mod := L.NewTable()
-	api := map[string]lua.LGFunction{
-		"request": apiRequest,
-		"connect": apiHttp(http.MethodConnect),
-		"delete":  apiHttp(http.MethodDelete),
-		"get":     apiHttp(http.MethodGet),
-		"head":    apiHttp(http.MethodHead),
-		"options": apiHttp(http.MethodOptions),
-		"patch":   apiHttp(http.MethodPatch),
-		"post":    apiHttp(http.MethodPost),
-		"put":     apiHttp(http.MethodPut),
-		"trace":   apiHttp(http.MethodTrace),
+func ClientLoader(L *lua.LState) *lua.LTable {
+	mod := &Client{
+		Module: *util.GetModule(L),
 	}
-	for name, fn := range api {
-		mod.RawSetString(name, L.NewFunction(fn))
-	}
-	return mod
+	mod.Api(util.LGFunctions{
+		"request": mod.apiRequest,
+		"connect": mod.apiHttp(http.MethodConnect),
+		"delete":  mod.apiHttp(http.MethodDelete),
+		"get":     mod.apiHttp(http.MethodGet),
+		"head":    mod.apiHttp(http.MethodHead),
+		"options": mod.apiHttp(http.MethodOptions),
+		"patch":   mod.apiHttp(http.MethodPatch),
+		"post":    mod.apiHttp(http.MethodPost),
+		"put":     mod.apiHttp(http.MethodPut),
+		"trace":   mod.apiHttp(http.MethodTrace),
+	})
+	return mod.Prototype
 }
 
-func apiRequest(L *lua.LState) int {
+func (c *Client) apiRequest(L *lua.LState) int {
 	method := L.CheckString(1)
 	url := L.CheckString(2)
 	opts := L.OptTable(3, L.NewTable())
-	return doRequest(L, method, url, opts)
+	return c.doRequest(method, url, opts)
 }
 
-func apiHttp(method string) lua.LGFunction {
+func (c *Client) apiHttp(method string) lua.LGFunction {
 	return func(L *lua.LState) int {
 		url := L.CheckString(1)
 		opts := L.OptTable(2, L.NewTable())
-		return doRequest(L, method, url, opts)
+		return c.doRequest(method, url, opts)
 	}
 }
 
-func doRequest(L *lua.LState, method, url string, opts *lua.LTable) int {
+func (c *Client) doRequest(method, url string, opts *lua.LTable) int {
 
-	params := parseOptions(L, opts)
-	response, err := parseResponse(L, method, url, params)
+	params := c.parseOptions(opts)
+	response, err := c.parseResponse(method, url, params)
 	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
+		return c.Error(err)
 	}
 
-	resTable := L.NewTable()
-	L.SetField(resTable, "status", response.status)
-	L.SetField(resTable, "headers", response.headers)
-	L.SetField(resTable, "body", response.body)
+	resTable := c.VmState.NewTable()
+	resTable.RawSetString("status", response.status)
+	resTable.RawSetString("headers", response.headers)
+	resTable.RawSetString("body", response.body)
 
-	L.Push(resTable)
-	return 1
+	return c.Push(resTable)
 }
 
-func parseResponse(L *lua.LState, method, URL string, params *requestParams) (*response, error) {
+func (c *Client) parseResponse(method, URL string, params *requestParams) (*response, error) {
 
-	req, err := createRequest(method, URL, params)
+	req, err := c.createRequest(method, URL, params)
 	if err != nil {
 		return nil, err
 	}
 
-	client, err := createClient(params)
+	client, err := c.createClient(params)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func parseResponse(L *lua.LState, method, URL string, params *requestParams) (*r
 
 	response := &response{
 		status:  lua.LNumber(res.StatusCode),
-		headers: L.NewTable(),
+		headers: c.VmState.NewTable(),
 	}
 
 	for key, values := range res.Header {
@@ -134,7 +134,7 @@ func parseResponse(L *lua.LState, method, URL string, params *requestParams) (*r
 	return response, nil
 }
 
-func createRequest(method, url string, params *requestParams) (*http.Request, error) {
+func (c *Client) createRequest(method, url string, params *requestParams) (*http.Request, error) {
 	request, err := http.NewRequest(method, url, bytes.NewReader(params.body))
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %v", err)
@@ -153,7 +153,7 @@ func createRequest(method, url string, params *requestParams) (*http.Request, er
 	return request, nil
 }
 
-func createClient(params *requestParams) (*http.Client, error) {
+func (c *Client) createClient(params *requestParams) (*http.Client, error) {
 
 	transport := &http.Transport{
 		Proxy:           http.ProxyFromEnvironment,
@@ -175,7 +175,7 @@ func createClient(params *requestParams) (*http.Client, error) {
 	return client, nil
 }
 
-func parseOptions(L *lua.LState, opts *lua.LTable) *requestParams {
+func (c *Client) parseOptions(opts *lua.LTable) *requestParams {
 
 	params := &requestParams{
 		userAgent:   pkg.Name + "/" + pkg.Version,
@@ -193,7 +193,7 @@ func parseOptions(L *lua.LState, opts *lua.LTable) *requestParams {
 			if value, ok := v.(lua.LString); ok {
 				params.userAgent = value.String()
 			} else {
-				L.ArgError(1, "userAgent must be string")
+				c.VmState.ArgError(1, "userAgent must be string")
 			}
 
 		case `headers`:
@@ -202,7 +202,7 @@ func parseOptions(L *lua.LState, opts *lua.LTable) *requestParams {
 					params.headers.Add(key.String(), val.String())
 				})
 			} else {
-				L.ArgError(1, "headers must be table")
+				c.VmState.ArgError(1, "headers must be table")
 			}
 
 		case `basicAuth`:
@@ -212,11 +212,11 @@ func parseOptions(L *lua.LState, opts *lua.LTable) *requestParams {
 					if val.Type() == lua.LTString {
 						params.basicAuth[keyStr] = val.String()
 					} else {
-						L.ArgError(1, "basicAuth `"+keyStr+"` must be string")
+						c.VmState.ArgError(1, "basicAuth `"+keyStr+"` must be string")
 					}
 				})
 			} else {
-				L.ArgError(1, "basicAuth must be table")
+				c.VmState.ArgError(1, "basicAuth must be table")
 			}
 
 		case `proxy`:
@@ -225,38 +225,38 @@ func parseOptions(L *lua.LState, opts *lua.LTable) *requestParams {
 				if err == nil {
 					params.proxy = proxyUrl
 				} else {
-					L.ArgError(1, "proxy must be http(s)://<username>:<password>@host:<port>")
+					c.VmState.ArgError(1, "proxy must be http(s)://<username>:<password>@host:<port>")
 				}
 			} else {
-				L.ArgError(1, "proxy must be string")
+				c.VmState.ArgError(1, "proxy must be string")
 			}
 
 		case `timeout`:
 			if value, ok := v.(lua.LNumber); ok {
 				params.timeout = time.Duration(value) * time.Millisecond
 			} else {
-				L.ArgError(1, "timeout must be number")
+				c.VmState.ArgError(1, "timeout must be number")
 			}
 
 		case `keepAlive`:
 			if value, ok := v.(lua.LNumber); ok {
 				params.keepAlive = time.Duration(value) * time.Millisecond
 			} else {
-				L.ArgError(1, "keepAlive must be number")
+				c.VmState.ArgError(1, "keepAlive must be number")
 			}
 
 		case `body`:
 			if value, ok := v.(lua.LString); ok {
 				params.body = []byte(string(value))
 			} else {
-				L.ArgError(1, "body must be string")
+				c.VmState.ArgError(1, "body must be string")
 			}
 
 		case `max_body_size`:
 			if value, ok := v.(lua.LNumber); ok {
 				params.maxBodySize = int64(value)
 			} else {
-				L.ArgError(1, "body must be number")
+				c.VmState.ArgError(1, "body must be number")
 			}
 		}
 	})

@@ -10,8 +10,10 @@ import (
 	"runtime/pprof"
 	"strings"
 
+	"lug/libs"
+	pkg "lug/package"
+
 	"github.com/chzyer/readline"
-	pkg "github.com/geekip/lug/package"
 	lua "github.com/yuin/gopher-lua"
 	"github.com/yuin/gopher-lua/parse"
 )
@@ -99,7 +101,7 @@ Available options are:
 	L.SetGlobal("arg", arg)
 
 	// Preload Lua modules
-	Preload(L)
+	libs.Preload(L)
 
 	// Show version information
 	if optVersion || optInteractive {

@@ -1,66 +1,65 @@
-package url
+package libs
 
 import (
+	"lug/util"
 	"net/url"
 
 	lua "github.com/yuin/gopher-lua"
 )
 
-func Loader(L *lua.LState) int {
-	api := map[string]lua.LGFunction{
-		"queryEscape":   QueryEscape,
-		"queryUnescape": QueryUnescape,
-		"parse":         ParseURL,
-		"new":           BuildURL,
-		"resolve":       resolveURL,
+type Url struct{ util.Module }
+
+func UrlLoader(L *lua.LState) int {
+	mod := &Url{
+		Module: *util.GetModule(L),
 	}
-	L.Push(L.SetFuncs(L.NewTable(), api))
-	return 1
+	api := util.LGFunctions{
+		"queryEscape":   mod.QueryEscape,
+		"queryUnescape": mod.QueryUnescape,
+		"parse":         mod.ParseURL,
+		"new":           mod.BuildURL,
+		"resolve":       mod.resolveURL,
+	}
+	return mod.Api(api)
 }
 
 // QueryEscape lua http.query_escape(string) returns escaped string
-func QueryEscape(L *lua.LState) int {
+func (u *Url) QueryEscape(L *lua.LState) int {
 	query := L.CheckString(1)
 	escapedUrl := url.QueryEscape(query)
-	L.Push(lua.LString(escapedUrl))
-	return 1
+	return u.Push(lua.LString(escapedUrl))
 }
 
 // QueryUnescape lua http.query_unescape(string) returns unescaped (string, error)
-func QueryUnescape(L *lua.LState) int {
+func (u *Url) QueryUnescape(L *lua.LState) int {
 	query := L.CheckString(1)
 	url, err := url.QueryUnescape(query)
 	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
+		return u.Error(err)
 	}
-	L.Push(lua.LString(url))
-	return 1
+	return u.Push(lua.LString(url))
 }
 
 // ParseURL lua http.parse_url(string) returns (table, err)
-func ParseURL(L *lua.LState) int {
-	u, err := url.Parse(L.CheckString(1))
+func (u *Url) ParseURL(L *lua.LState) int {
+	U, err := url.Parse(L.CheckString(1))
 	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
+		return u.Error(err)
 	}
 
 	t := L.NewTable()
-	t.RawSetString(`scheme`, lua.LString(u.Scheme))
-	t.RawSetString(`host`, lua.LString(u.Host))
-	t.RawSetString(`path`, lua.LString(u.Path))
-	t.RawSetString(`rawQuery`, lua.LString(u.RawQuery))
-	t.RawSetString(`port`, lua.LString(u.Port()))
-	t.RawSetString(`fragment`, lua.LString(u.Fragment))
+	t.RawSetString(`scheme`, lua.LString(U.Scheme))
+	t.RawSetString(`host`, lua.LString(U.Host))
+	t.RawSetString(`path`, lua.LString(U.Path))
+	t.RawSetString(`rawQuery`, lua.LString(U.RawQuery))
+	t.RawSetString(`port`, lua.LString(U.Port()))
+	t.RawSetString(`fragment`, lua.LString(U.Fragment))
 
 	// user
-	if u.User != nil {
+	if U.User != nil {
 		user := L.NewTable()
-		user.RawSetString(`username`, lua.LString(u.User.Username()))
-		password, found := u.User.Password()
+		user.RawSetString(`username`, lua.LString(U.User.Username()))
+		password, found := U.User.Password()
 		if found {
 			user.RawSetString(`password`, lua.LString(password))
 		}
@@ -69,7 +68,7 @@ func ParseURL(L *lua.LState) int {
 
 	// query
 	q := L.NewTable()
-	for k, v := range u.Query() {
+	for k, v := range U.Query() {
 		values := L.NewTable()
 		for _, value := range v {
 			values.Append(lua.LString(value))
@@ -78,19 +77,18 @@ func ParseURL(L *lua.LState) int {
 	}
 	t.RawSetString(`query`, q)
 
-	L.Push(t)
-	return 1
+	return u.Push(t)
 }
 
 // BuildURL lua http.parse_url(table) returns string
-func BuildURL(L *lua.LState) int {
+func (u *Url) BuildURL(L *lua.LState) int {
 	t := L.CheckTable(1)
-	u := &url.URL{}
+	U := &url.URL{}
 	t.ForEach(func(k lua.LValue, v lua.LValue) {
 		// parse scheme
 		if k.String() == `scheme` {
 			if value, ok := v.(lua.LString); ok {
-				u.Scheme = string(value)
+				U.Scheme = string(value)
 			} else {
 				L.ArgError(1, "scheme must be string")
 			}
@@ -98,7 +96,7 @@ func BuildURL(L *lua.LState) int {
 		// parse host
 		if k.String() == `host` {
 			if value, ok := v.(lua.LString); ok {
-				u.Host = string(value)
+				U.Host = string(value)
 			} else {
 				L.ArgError(1, "host must be string")
 			}
@@ -106,7 +104,7 @@ func BuildURL(L *lua.LState) int {
 		// parse path
 		if k.String() == `path` {
 			if value, ok := v.(lua.LString); ok {
-				u.Path = string(value)
+				U.Path = string(value)
 			} else {
 				L.ArgError(1, "path must be string")
 			}
@@ -120,7 +118,7 @@ func BuildURL(L *lua.LState) int {
 			} else {
 				L.ArgError(1, "user must be table")
 			}
-			u.User = url.UserPassword(username, password)
+			U.User = url.UserPassword(username, password)
 		}
 		// parse query
 		if k.String() == `query` {
@@ -137,7 +135,7 @@ func BuildURL(L *lua.LState) int {
 						L.ArgError(1, "query values must be table")
 					}
 				})
-				u.RawQuery = values.Encode()
+				U.RawQuery = values.Encode()
 			} else {
 				L.ArgError(1, "query must be table")
 			}
@@ -145,36 +143,30 @@ func BuildURL(L *lua.LState) int {
 		// parse fragment
 		if k.String() == `fragment` {
 			if value, ok := v.(lua.LString); ok {
-				u.Fragment = string(value)
+				U.Fragment = string(value)
 			} else {
 				L.ArgError(1, "fragment must be string")
 			}
 		}
 
 	})
-	L.Push(lua.LString(u.String()))
-	return 1
+	return u.Push(lua.LString(U.String()))
 }
 
-func resolveURL(L *lua.LState) int {
+func (u *Url) resolveURL(L *lua.LState) int {
 	from := L.CheckString(1)
 	to := L.CheckString(2)
 
 	fromUrl, err := url.Parse(from)
 	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
+		return u.Error(err)
 	}
 
 	toUrl, err := url.Parse(to)
 	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
+		return u.Error(err)
 	}
 
 	url := fromUrl.ResolveReference(toUrl).String()
-	L.Push(lua.LString(url))
-	return 1
+	return u.Push(lua.LString(url))
 }
