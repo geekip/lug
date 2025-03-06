@@ -7,17 +7,9 @@ import (
 func CallLua(L *lua.LState, lfn lua.LValue, args ...interface{}) error {
 	argLen := len(args)
 	L.Push(lfn)
-
 	for _, arg := range args {
 		L.Push(ToLuaValue(arg))
 	}
-
-	// err := childState.CallByParam(lua.P{
-	// 	Fn:      fn,
-	// 	NRet:    1,
-	// 	Protect: true,
-	// })
-
 	return L.PCall(argLen, 1, nil)
 }
 
@@ -49,4 +41,8 @@ func GetUserData(L *lua.LState, key string, val interface{}) *lua.LUserData {
 	L.SetMetatable(ud, L.GetTypeMetatable(key))
 
 	return ud
+}
+
+func CheckStatusCode(code int) bool {
+	return code >= 100 && code < 600
 }

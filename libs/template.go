@@ -25,13 +25,13 @@ func TemplateLoader(L *lua.LState) int {
 		Module: *util.GetModule(L),
 	}
 	api := util.LGFunctions{
-		"file":   mod.apiRenderFile,
-		"string": mod.apiRenderString,
+		"file":   mod.executeFile,
+		"string": mod.executeString,
 	}
-	return mod.Api(api)
+	return mod.SetFuncs(api)
 }
 
-func (t *Template) apiRenderFile(L *lua.LState) int {
+func (t *Template) executeFile(L *lua.LState) int {
 	path := L.CheckString(1)
 
 	entryInterface, _ := templateCache.LoadOrStore(path, &templateEntry{})
@@ -44,28 +44,26 @@ func (t *Template) apiRenderFile(L *lua.LState) int {
 	if entry.err != nil {
 		return t.Error(entry.err)
 	}
-	return t.renderTemplate(entry.tmpl)
+	return t.executeTemplate(entry.tmpl)
 }
 
-func (t *Template) apiRenderString(L *lua.LState) int {
+func (t *Template) executeString(L *lua.LState) int {
 	tmplStr := L.CheckString(1)
 	tmpl, err := template.New("T").Parse(tmplStr)
 	if err != nil {
 		return t.Error(err)
 	}
-	return t.renderTemplate(tmpl)
+	return t.executeTemplate(tmpl)
 }
 
-func (t *Template) renderTemplate(tmpl *template.Template) int {
+func (t *Template) executeTemplate(tmpl *template.Template) int {
 	var data interface{}
-	if t.VmState.GetTop() >= 2 {
-		data = util.ToGoValue(t.VmState.CheckTable(2))
+	if t.Vm.GetTop() >= 2 {
+		data = util.ToGoValue(t.Vm.CheckTable(2), false)
 	}
-
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return t.Error(err)
 	}
-
 	return t.Push(lua.LString(buf.String()))
 }

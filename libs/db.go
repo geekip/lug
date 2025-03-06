@@ -1,13 +1,9 @@
 package libs
 
 import (
-	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"strconv"
 	"strings"
-	"time"
 
 	"lug/util"
 
@@ -25,52 +21,40 @@ type DB struct {
 	groupBy string
 	having  string
 	orderBy string
-	limit   string
+	limit   int
 	args    []interface{}
+}
+
+func (d *DB) reset() {
+	d.table = ""
+	d.fields = ""
+	d.where = ""
+	d.groupBy = ""
+	d.having = ""
+	d.orderBy = ""
+	d.limit = 0
+	d.args = nil
 }
 
 func DbLoader(L *lua.LState) int {
 	mod := util.GetModule(L)
-	api := util.LGFunctions{"open": newDB}
-	return mod.Api(api)
+	api := util.LGFunctions{"open": openDatabase}
+	return mod.SetFuncs(api)
 }
 
-func newDB(L *lua.LState) int {
+func openDatabase(L *lua.LState) int {
 	Type := L.CheckString(1)
 	dsn := L.CheckString(2)
-
-	var db *sql.DB
-	var err error
-
-	switch Type {
-	case "sqlite":
-		db, err = sql.Open("sqlite3", dsn)
-	case "mysql":
-		db, err = sql.Open("mysql", dsn)
-	default:
-		err = fmt.Errorf("unsupported database type: %s", Type)
-	}
-
+	db, err := newDatabase(Type, dsn)
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(err.Error()))
 		return 2
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err = db.PingContext(ctx); err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
 	mod := &DB{
 		Module: *util.GetModule(L),
 		db:     db,
 	}
-
 	api := util.LGFunctions{
 		"table":  mod.Table,
 		"field":  mod.Field,
@@ -89,8 +73,29 @@ func newDB(L *lua.LState) int {
 		"count":  mod.Count,
 		"close":  mod.Close,
 	}
+	return mod.SetFuncs(api)
+}
 
-	return mod.Api(api)
+func newDatabase(Type, dsn string) (*sql.DB, error) {
+	var db *sql.DB
+	var err error
+
+	switch Type {
+	case "sqlite":
+		db, err = sql.Open("sqlite3", dsn)
+	case "mysql":
+		db, err = sql.Open("mysql", dsn)
+	default:
+		err = fmt.Errorf("unsupported database type: %s", Type)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err = db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
 }
 
 func (d *DB) Table(L *lua.LState) int {
@@ -126,7 +131,7 @@ func (d *DB) Order(L *lua.LState) int {
 }
 
 func (d *DB) Limit(L *lua.LState) int {
-	d.limit = strconv.Itoa(L.CheckInt(1))
+	d.limit = L.CheckInt(1)
 	return d.Self()
 }
 
@@ -156,12 +161,16 @@ func (d *DB) Exec(L *lua.LState) int {
 }
 
 func (d *DB) Insert(L *lua.LState) int {
-	data := L.CheckTable(1)
-	dataLen := data.Len()
 
-	keys := make([]string, 0, dataLen)
-	placeholders := make([]string, 0, dataLen)
-	values := make([]interface{}, 0, dataLen)
+	if err := d.checkTable("insert"); err != nil {
+		return d.Error(err)
+	}
+	data := L.CheckTable(1)
+	dLen := data.Len()
+
+	keys := make([]string, 0, dLen)
+	placeholders := make([]string, 0, dLen)
+	values := make([]interface{}, 0, dLen)
 
 	data.ForEach(func(lk, lv lua.LValue) {
 		keys = append(keys, lk.String())
@@ -190,13 +199,19 @@ func (d *DB) Insert(L *lua.LState) int {
 }
 
 func (d *DB) Update(L *lua.LState) int {
-	data := L.CheckTable(1)
-	dataLen := data.Len()
-	if d.where == "" {
-		return d.Error(errors.New("update requires WHERE clause"))
+
+	if err := d.checkTable("update"); err != nil {
+		return d.Error(err)
 	}
-	sets := make([]string, 0, dataLen)
-	values := make([]interface{}, 0, dataLen)
+	if err := d.checkWhere("update"); err != nil {
+		return d.Error(err)
+	}
+
+	data := L.CheckTable(1)
+	dLen := data.Len()
+
+	sets := make([]string, 0, dLen)
+	values := make([]interface{}, 0, dLen)
 
 	data.ForEach(func(lk, lv lua.LValue) {
 		sets = append(sets, fmt.Sprintf("%s = ?", lk.String()))
@@ -214,8 +229,11 @@ func (d *DB) Update(L *lua.LState) int {
 }
 
 func (d *DB) Delete(L *lua.LState) int {
-	if d.where == "" {
-		return d.Error(errors.New("delete requires WHERE clause"))
+	if err := d.checkTable("update"); err != nil {
+		return d.Error(err)
+	}
+	if err := d.checkWhere("update"); err != nil {
+		return d.Error(err)
 	}
 	query := fmt.Sprintf("DELETE FROM %s WHERE %s", d.table, d.where)
 	return d.exec(query, d.args)
@@ -244,7 +262,7 @@ func (d *DB) exec(query string, args []interface{}) int {
 	return d.Push(lua.LNumber(count))
 }
 
-func (d *DB) query(query string, args []interface{}, isAll bool) int {
+func (d *DB) query(query string, args []interface{}, isRows bool) int {
 	rows, err := d.db.Query(query, args...)
 	if err != nil {
 		return d.Error(err)
@@ -257,8 +275,8 @@ func (d *DB) query(query string, args []interface{}, isAll bool) int {
 	}
 
 	var results *lua.LTable
-	if isAll {
-		results = d.VmState.NewTable()
+	if isRows {
+		results = d.Vm.NewTable()
 		for rows.Next() {
 			rowTable, err := d.makeRow(rows, columns)
 			if err != nil {
@@ -279,15 +297,16 @@ func (d *DB) query(query string, args []interface{}, isAll bool) int {
 }
 
 func (d *DB) makeRow(rows *sql.Rows, columns []string) (*lua.LTable, error) {
-	values := make([]interface{}, len(columns))
-	valuePtrs := make([]interface{}, len(columns))
+	cLen := len(columns)
+	values := make([]interface{}, cLen)
+	valuePtrs := make([]interface{}, cLen)
 	for i := range values {
 		valuePtrs[i] = &values[i]
 	}
 	if err := rows.Scan(valuePtrs...); err != nil {
 		return nil, err
 	}
-	result := d.VmState.NewTable()
+	result := d.Vm.NewTable()
 	for i, col := range columns {
 		val := values[i]
 		if bt, ok := val.([]byte); ok {
@@ -300,50 +319,54 @@ func (d *DB) makeRow(rows *sql.Rows, columns []string) (*lua.LTable, error) {
 }
 
 func (d *DB) getNativeQuery() (string, []interface{}) {
-	query := d.VmState.CheckString(1)
-	argLen := d.VmState.GetTop()
+	query := d.Vm.CheckString(1)
 	var args []interface{}
-	if argLen > 1 {
-		args = make([]interface{}, 0)
-		for i := 2; i <= argLen; i++ {
-			args = append(args, d.VmState.CheckAny(i))
-		}
+	for i := 2; i <= d.Vm.GetTop(); i++ {
+		args = append(args, d.Vm.CheckAny(i))
 	}
 	return query, args
 }
 
 func (d *DB) getConditionalQuery() (string, []interface{}) {
+
+	var builder strings.Builder
+
 	if d.fields == "" {
 		d.fields = "*"
 	}
-	query := fmt.Sprintf("SELECT %s FROM %s", d.fields, d.table)
-	var args []interface{}
-
+	builder.WriteString(fmt.Sprintf("SELECT %s FROM %s", d.fields, d.table))
 	if d.where != "" {
-		query += " WHERE " + d.where
-		args = append(args, d.args...)
+		builder.WriteString(fmt.Sprintf(" WHERE %s", d.where))
 	}
 	if d.groupBy != "" {
-		query += " GROUP BY " + d.groupBy
+		builder.WriteString(fmt.Sprintf(" GROUP BY %s", d.groupBy))
 	}
 	if d.having != "" {
-		query += " HAVING " + d.having
+		builder.WriteString(fmt.Sprintf(" HAVING %s", d.having))
 	}
 	if d.orderBy != "" {
-		query += " ORDER BY " + d.orderBy
+		builder.WriteString(fmt.Sprintf(" ORDER BY %s", d.orderBy))
 	}
-	if d.limit != "" {
-		query += " LIMIT " + d.limit
+	if d.limit > 0 {
+		builder.WriteString(fmt.Sprintf(" LIMIT %d", d.limit))
 	}
+	query, args := builder.String(), d.args
 
-	d.table = ""
-	d.fields = ""
-	d.where = ""
-	d.groupBy = ""
-	d.having = ""
-	d.orderBy = ""
-	d.limit = ""
-	d.args = nil
+	d.reset()
 
 	return query, args
+}
+
+func (d *DB) checkTable(t string) error {
+	if d.table == "" {
+		return fmt.Errorf("%v requires table name", t)
+	}
+	return nil
+}
+
+func (d *DB) checkWhere(t string) error {
+	if d.where == "" {
+		return fmt.Errorf("%v requires where name", t)
+	}
+	return nil
 }

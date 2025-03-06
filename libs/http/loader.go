@@ -8,7 +8,7 @@ import (
 
 func Loader(L *lua.LState) int {
 	mod := util.GetModule(L)
-	mod.Prototype.RawSetString("server", ServerLoader(L))
-	mod.Prototype.RawSetString("client", ClientLoader(L))
+	mod.Fn.RawSetString("server", ServerLoader(L))
+	mod.Fn.RawSetString("client", ClientLoader(L))
 	return mod.Self()
 }

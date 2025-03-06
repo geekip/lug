@@ -12,11 +12,7 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type (
-	Fs struct {
-		util.Module
-	}
-)
+type Fs struct{ util.Module }
 
 var fileLocks sync.Map
 
@@ -48,7 +44,7 @@ func FsLoader(L *lua.LState) int {
 		"fromSlash": mod.fromSlash,
 		"toSlash":   mod.toSlash,
 	}
-	return mod.Api(api)
+	return mod.SetFuncs(api)
 }
 
 func (f *Fs) mkdir(L *lua.LState) int {
@@ -78,8 +74,9 @@ func (f *Fs) mkdir(L *lua.LState) int {
 
 func (f *Fs) remove(L *lua.LState) int {
 	path := L.CheckString(1)
+	recursive := L.OptBool(2, false)
 
-	if L.GetTop() >= 2 && L.ToBool(2) {
+	if recursive {
 		if err := os.RemoveAll(path); err != nil {
 			return f.Error(err)
 		}
@@ -101,8 +98,7 @@ func (f *Fs) isdir(L *lua.LState) int {
 }
 
 func (f *Fs) dirname(L *lua.LState) int {
-	path := L.CheckString(1)
-	return f.Push(lua.LString(filepath.Dir(path)))
+	return f._dirname(L.CheckString(1))
 }
 
 func (f *Fs) basename(L *lua.LState) int {
@@ -115,6 +111,10 @@ func (f *Fs) exedir(L *lua.LState) int {
 	if err != nil {
 		return f.Error(err)
 	}
+	return f._dirname(path)
+}
+
+func (f *Fs) _dirname(path string) int {
 	return f.Push(lua.LString(filepath.Dir(path)))
 }
 

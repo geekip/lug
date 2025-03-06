@@ -20,7 +20,7 @@ func UrlLoader(L *lua.LState) int {
 		"new":           mod.BuildURL,
 		"resolve":       mod.resolveURL,
 	}
-	return mod.Api(api)
+	return mod.SetFuncs(api)
 }
 
 // QueryEscape lua http.query_escape(string) returns escaped string
@@ -59,8 +59,8 @@ func (u *Url) ParseURL(L *lua.LState) int {
 	if U.User != nil {
 		user := L.NewTable()
 		user.RawSetString(`username`, lua.LString(U.User.Username()))
-		password, found := U.User.Password()
-		if found {
+
+		if password, found := U.User.Password(); found {
 			user.RawSetString(`password`, lua.LString(password))
 		}
 		t.RawSetString(`user`, user)

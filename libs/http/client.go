@@ -40,7 +40,7 @@ func ClientLoader(L *lua.LState) *lua.LTable {
 	mod := &Client{
 		Module: *util.GetModule(L),
 	}
-	mod.Api(util.LGFunctions{
+	mod.SetFuncs(util.LGFunctions{
 		"request": mod.apiRequest,
 		"connect": mod.apiHttp(http.MethodConnect),
 		"delete":  mod.apiHttp(http.MethodDelete),
@@ -52,7 +52,7 @@ func ClientLoader(L *lua.LState) *lua.LTable {
 		"put":     mod.apiHttp(http.MethodPut),
 		"trace":   mod.apiHttp(http.MethodTrace),
 	})
-	return mod.Prototype
+	return mod.Fn
 }
 
 func (c *Client) apiRequest(L *lua.LState) int {
@@ -78,7 +78,7 @@ func (c *Client) doRequest(method, url string, opts *lua.LTable) int {
 		return c.Error(err)
 	}
 
-	resTable := c.VmState.NewTable()
+	resTable := c.Vm.NewTable()
 	resTable.RawSetString("status", response.status)
 	resTable.RawSetString("headers", response.headers)
 	resTable.RawSetString("body", response.body)
@@ -106,7 +106,7 @@ func (c *Client) parseResponse(method, URL string, params *requestParams) (*resp
 
 	response := &response{
 		status:  lua.LNumber(res.StatusCode),
-		headers: c.VmState.NewTable(),
+		headers: c.Vm.NewTable(),
 	}
 
 	for key, values := range res.Header {
@@ -193,7 +193,7 @@ func (c *Client) parseOptions(opts *lua.LTable) *requestParams {
 			if value, ok := v.(lua.LString); ok {
 				params.userAgent = value.String()
 			} else {
-				c.VmState.ArgError(1, "userAgent must be string")
+				c.Vm.ArgError(1, "userAgent must be string")
 			}
 
 		case `headers`:
@@ -202,7 +202,7 @@ func (c *Client) parseOptions(opts *lua.LTable) *requestParams {
 					params.headers.Add(key.String(), val.String())
 				})
 			} else {
-				c.VmState.ArgError(1, "headers must be table")
+				c.Vm.ArgError(1, "headers must be table")
 			}
 
 		case `basicAuth`:
@@ -212,11 +212,11 @@ func (c *Client) parseOptions(opts *lua.LTable) *requestParams {
 					if val.Type() == lua.LTString {
 						params.basicAuth[keyStr] = val.String()
 					} else {
-						c.VmState.ArgError(1, "basicAuth `"+keyStr+"` must be string")
+						c.Vm.ArgError(1, "basicAuth `"+keyStr+"` must be string")
 					}
 				})
 			} else {
-				c.VmState.ArgError(1, "basicAuth must be table")
+				c.Vm.ArgError(1, "basicAuth must be table")
 			}
 
 		case `proxy`:
@@ -225,38 +225,38 @@ func (c *Client) parseOptions(opts *lua.LTable) *requestParams {
 				if err == nil {
 					params.proxy = proxyUrl
 				} else {
-					c.VmState.ArgError(1, "proxy must be http(s)://<username>:<password>@host:<port>")
+					c.Vm.ArgError(1, "proxy must be http(s)://<username>:<password>@host:<port>")
 				}
 			} else {
-				c.VmState.ArgError(1, "proxy must be string")
+				c.Vm.ArgError(1, "proxy must be string")
 			}
 
 		case `timeout`:
 			if value, ok := v.(lua.LNumber); ok {
 				params.timeout = time.Duration(value) * time.Millisecond
 			} else {
-				c.VmState.ArgError(1, "timeout must be number")
+				c.Vm.ArgError(1, "timeout must be number")
 			}
 
 		case `keepAlive`:
 			if value, ok := v.(lua.LNumber); ok {
 				params.keepAlive = time.Duration(value) * time.Millisecond
 			} else {
-				c.VmState.ArgError(1, "keepAlive must be number")
+				c.Vm.ArgError(1, "keepAlive must be number")
 			}
 
 		case `body`:
 			if value, ok := v.(lua.LString); ok {
 				params.body = []byte(string(value))
 			} else {
-				c.VmState.ArgError(1, "body must be string")
+				c.Vm.ArgError(1, "body must be string")
 			}
 
 		case `max_body_size`:
 			if value, ok := v.(lua.LNumber); ok {
 				params.maxBodySize = int64(value)
 			} else {
-				c.VmState.ArgError(1, "body must be number")
+				c.Vm.ArgError(1, "body must be number")
 			}
 		}
 	})

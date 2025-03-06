@@ -85,7 +85,6 @@ func (r *Router) handle(pattern string, handler Handler) *Router {
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-
 	ctx := newContext(w, req)
 	defer func() {
 		if err := recover(); err != nil {

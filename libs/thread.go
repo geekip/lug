@@ -9,17 +9,15 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type (
-	Thread struct {
-		util.Module
-		wg *sync.WaitGroup
-	}
-)
+type Thread struct {
+	util.Module
+	wg *sync.WaitGroup
+}
 
 func ThreadLoader(L *lua.LState) int {
 	mod := util.GetModule(L)
 	api := util.LGFunctions{"new": newThread}
-	return mod.Api(api)
+	return mod.SetFuncs(api)
 }
 
 func newThread(L *lua.LState) int {
@@ -31,7 +29,7 @@ func newThread(L *lua.LState) int {
 		"wait": mod.wait,
 		"run":  mod.run,
 	}
-	return mod.Api(api)
+	return mod.SetFuncs(api)
 }
 
 func (m *Thread) run(L *lua.LState) int {
@@ -42,10 +40,10 @@ func (m *Thread) run(L *lua.LState) int {
 	go func() {
 		defer m.wg.Done()
 
-		thread := lua.NewState()
-		defer thread.Close()
+		vm := util.VmPool.Get()
+		defer util.VmPool.Put(vm)
 
-		err := util.CallLua(thread, callback)
+		err := util.CallLua(vm, callback)
 		if err != nil {
 			fmt.Println(err.Error())
 			return

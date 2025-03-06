@@ -23,9 +23,9 @@ type Server struct {
 
 func ServerLoader(L *lua.LState) *lua.LTable {
 	mod := newServer(L, newRouter())
-	mod.Prototype.RawSetString("listen", L.NewFunction(mod.listen))
-	mod.Prototype.RawSetString("group", L.NewFunction(mod.group))
-	return mod.Prototype
+	mod.Fn.RawSetString("listen", L.NewFunction(mod.listen))
+	mod.Fn.RawSetString("group", L.NewFunction(mod.group))
+	return mod.Fn
 }
 
 func newServer(L *lua.LState, router *Router) *Server {
@@ -47,7 +47,7 @@ func newServer(L *lua.LState, router *Router) *Server {
 		"put":     mod.method(http.MethodPut),
 		"trace":   mod.method(http.MethodTrace),
 	}
-	mod.Api(api)
+	mod.SetFuncs(api)
 	return mod
 }
 
@@ -79,20 +79,20 @@ func (s *Server) handle(L *lua.LState) int {
 }
 
 func (s *Server) handleRoute(method string) int {
-	path := s.VmState.CheckString(1)
-	handler := s.VmState.CheckFunction(2)
+	path := s.Vm.CheckString(1)
+	handler := s.Vm.CheckFunction(2)
 	s.router.method(method).handle(path, s.createLuaHandler(handler))
 	return s.Self()
 }
 
 func (s *Server) createLuaHandler(handler *lua.LFunction) Handler {
 	return func(ctx *Context) string {
-		s.VmState.SetTop(0) // 清空栈
-		ctxApi := ctx.newContextApi(s.VmState)
-		if err := util.CallLua(s.VmState, handler, ctxApi); err != nil {
+		s.Vm.SetTop(0) // 清空栈
+		ctxApi := ctx.newContextApi(s.Vm)
+		if err := util.CallLua(s.Vm, handler, ctxApi); err != nil {
 			ctx.Error(err.Error(), http.StatusInternalServerError)
 		}
-		return s.VmState.Get(-1).String()
+		return s.Vm.Get(-1).String()
 	}
 }
 

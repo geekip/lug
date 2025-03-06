@@ -12,6 +12,7 @@ import (
 
 	"lug/libs"
 	pkg "lug/package"
+	"lug/util"
 
 	"github.com/chzyer/readline"
 	lua "github.com/yuin/gopher-lua"
@@ -22,6 +23,7 @@ func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
+	defer util.VmPool.Shutdown()
 }
 
 func run() error {
@@ -79,8 +81,11 @@ Available options are:
 	}
 
 	// Initialize Lua state
-	L := lua.NewState()
-	defer L.Close()
+	L := util.VmPool.Get()
+	defer util.VmPool.Put(L)
+
+	// L := lua.NewState()
+	// defer L.Close()
 
 	// Set memory limit
 	if optMemoryLimit > 0 {
@@ -134,7 +139,6 @@ Available options are:
 				return err
 			}
 		}
-
 	}
 
 	// Enter interactive mode
@@ -143,7 +147,6 @@ Available options are:
 			return err
 		}
 	}
-
 	return nil
 }
 

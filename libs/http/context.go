@@ -12,7 +12,6 @@ import (
 )
 
 type Context struct {
-	// util.Module
 	Request  *http.Request
 	Response http.ResponseWriter
 	Method   lua.LString
@@ -82,30 +81,36 @@ func (ctx *Context) error(L *lua.LState) int {
 }
 
 func (ctx *Context) newContextApi(L *lua.LState) *lua.LTable {
+	mod := util.GetModule(L)
 
-	api := L.NewTable()
-	api.RawSetString("method", ctx.Method)
-	api.RawSetString("path", ctx.Path)
-	api.RawSetString("params", ctx.Params)
-	api.RawSetString("get", L.NewFunction(ctx.get))
-	api.RawSetString("set", L.NewFunction(ctx.set))
-	api.RawSetString("setStatus", L.NewFunction(ctx.setStatus))
-	api.RawSetString("getQuery", L.NewFunction(ctx.getQuery))
-	api.RawSetString("setHeader", L.NewFunction(ctx.setHeader))
-	api.RawSetString("getHeader", L.NewFunction(ctx.getHeader))
-	api.RawSetString("getCookie", L.NewFunction(ctx.getCookie))
-	api.RawSetString("setCookie", L.NewFunction(ctx.setCookie))
-	api.RawSetString("files", L.NewFunction(ctx.files))
-	api.RawSetString("file", L.NewFunction(ctx.file))
-	api.RawSetString("basicAuth", L.NewFunction(ctx.basicAuth))
-	api.RawSetString("postForm", L.NewFunction(ctx.postForm))
-	api.RawSetString("error", L.NewFunction(ctx.error))
-	if ctx.Next != nil {
-		api.RawSetString("next", L.NewFunction(ctx.next))
+	mod.Fn.RawSetString("method", ctx.Method)
+	mod.Fn.RawSetString("path", ctx.Path)
+	mod.Fn.RawSetString("params", ctx.Params)
+
+	api := util.LGFunctions{
+		"getData":     ctx.getData,
+		"setData":     ctx.setData,
+		"setStatus":   ctx.setStatus,
+		"getQuery":    ctx.getQuery,
+		"setHeader":   ctx.setHeader,
+		"getHeader":   ctx.getHeader,
+		"getCookie":   ctx.getCookie,
+		"setCookie":   ctx.setCookie,
+		"files":       ctx.files,
+		"file":        ctx.file,
+		"basicAuth":   ctx.basicAuth,
+		"postForm":    ctx.postForm,
+		"error":       ctx.error,
+		"redirect":    ctx.redirect,
+		"getClientIp": ctx.getClientIp,
 	}
-	api.RawSetString("redirect", L.NewFunction(ctx.redirect))
-	api.RawSetString("getClientIp", L.NewFunction(ctx.getClientIp))
-	return api
+	mod.SetFuncs(api)
+
+	if ctx.Next != nil {
+		mod.Fn.RawSetString("next", L.NewFunction(ctx.next))
+	}
+
+	return mod.Fn
 }
 
 func (ctx *Context) next(L *lua.LState) int {
@@ -114,7 +119,7 @@ func (ctx *Context) next(L *lua.LState) int {
 	return 1
 }
 
-func (ctx *Context) set(L *lua.LState) int {
+func (ctx *Context) setData(L *lua.LState) int {
 	key := L.CheckString(1)
 	val := L.CheckAny(2)
 
@@ -130,7 +135,7 @@ func (ctx *Context) set(L *lua.LState) int {
 	return 0
 }
 
-func (ctx *Context) get(L *lua.LState) int {
+func (ctx *Context) getData(L *lua.LState) int {
 
 	key := L.CheckString(1)
 	if key == "" {
@@ -148,7 +153,7 @@ func (ctx *Context) get(L *lua.LState) int {
 
 func (ctx *Context) setStatus(L *lua.LState) int {
 	code := L.CheckInt(1)
-	if util.CheckStatusCode(code) {
+	if code >= 100 && code < 600 {
 		ctx.Status = lua.LNumber(code)
 	}
 	return 0
@@ -252,22 +257,27 @@ func (ctx *Context) getCookie(L *lua.LState) int {
 		L.Push(lua.LString(err.Error()))
 		return 2
 	}
-	lcookies := L.NewTable()
-	lcookies.RawSetString("Name", lua.LString(cookie.Name))
-	lcookies.RawSetString("Value", lua.LString(cookie.Value))
-	lcookies.RawSetString("Path", lua.LString(cookie.Path))
-	lcookies.RawSetString("Domain", lua.LString(cookie.Domain))
-	lcookies.RawSetString("Expires", lua.LNumber(cookie.Expires.Unix()))
-	lcookies.RawSetString("MaxAge", lua.LNumber(cookie.MaxAge))
-	lcookies.RawSetString("Secure", lua.LBool(cookie.Secure))
-	lcookies.RawSetString("HttpOnly", lua.LBool(cookie.HttpOnly))
-	lcookies.RawSetString("SameSite", lua.LNumber(cookie.SameSite))
-	lcookies.RawSetString("Raw", lua.LString(cookie.Raw))
 	unparsedTable := L.NewTable()
 	for _, u := range cookie.Unparsed {
 		unparsedTable.Append(lua.LString(u))
 	}
-	lcookies.RawSetString("Unparsed", unparsedTable)
+	lCookie := map[string]lua.LValue{
+		"Name":     lua.LString(cookie.Name),
+		"Value":    lua.LString(cookie.Value),
+		"Path":     lua.LString(cookie.Path),
+		"Domain":   lua.LString(cookie.Domain),
+		"Expires":  lua.LNumber(cookie.Expires.Unix()),
+		"MaxAge":   lua.LNumber(cookie.MaxAge),
+		"Secure":   lua.LBool(cookie.Secure),
+		"HttpOnly": lua.LBool(cookie.HttpOnly),
+		"SameSite": lua.LNumber(cookie.SameSite),
+		"Raw":      lua.LString(cookie.Raw),
+		"Unparsed": unparsedTable,
+	}
+	lcookies := L.NewTable()
+	for k, v := range lCookie {
+		lcookies.RawSetString(k, v)
+	}
 	L.Push(lcookies)
 	return 1
 }
@@ -346,3 +356,20 @@ func (ctx *Context) getClientIp(L *lua.LState) int {
 	L.Push(lua.LString(cip))
 	return 1
 }
+
+// func (ctx *Context) getClientIp(L *lua.LState) int {
+// 	var cip string
+// 	if ip := ctx.Request.Header.Get("X-Forwarded-For"); ip != "" {
+// 		ips := strings.Split(ip, ",")
+// 		if len(ips) > 0 {
+// 			ip = strings.TrimSpace(ips[0])
+// 		}
+// 		cip = ip
+// 	} else if ip := ctx.Request.Header.Get("X-Real-IP"); ip != "" {
+// 		cip = ip
+// 	} else {
+// 		cip = strings.Split(ctx.Request.RemoteAddr, ":")[0]
+// 	}
+// 	L.Push(lua.LString(cip))
+// 	return 1
+// }

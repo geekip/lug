@@ -20,7 +20,7 @@ func Uft8Loader(L *lua.LState) int {
 	mod := &Utf8{
 		Module: *util.GetModule(L),
 	}
-	mod.Prototype.RawSetString("charpattern", Utf8charpattern)
+	mod.Fn.RawSetString("charpattern", Utf8charpattern)
 
 	api := util.LGFunctions{
 		"char":      mod.char,
@@ -30,7 +30,7 @@ func Uft8Loader(L *lua.LState) int {
 		"offset":    mod.offset,
 	}
 
-	return mod.Api(api)
+	return mod.SetFuncs(api)
 }
 
 func (u *Utf8) char(ls *lua.LState) int {
