@@ -10,26 +10,27 @@ import (
 )
 
 type Thread struct {
-	util.Module
+	*util.Module
 	wg *sync.WaitGroup
 }
 
 func ThreadLoader(L *lua.LState) int {
-	mod := util.GetModule(L)
-	api := util.LGFunctions{"new": newThread}
-	return mod.SetFuncs(api)
+	mod := util.NewModule(L, util.Methods{
+		"new": newThread,
+	})
+	return mod.Self()
 }
 
 func newThread(L *lua.LState) int {
 	mod := &Thread{
-		Module: *util.GetModule(L),
+		Module: util.NewModule(L, nil),
 		wg:     &sync.WaitGroup{},
 	}
-	api := util.LGFunctions{
+	mod.SetMethods(util.Methods{
 		"wait": mod.wait,
 		"run":  mod.run,
-	}
-	return mod.SetFuncs(api)
+	})
+	return mod.Self()
 }
 
 func (m *Thread) run(L *lua.LState) int {
@@ -43,7 +44,7 @@ func (m *Thread) run(L *lua.LState) int {
 		vm := util.VmPool.Get()
 		defer util.VmPool.Put(vm)
 
-		err := util.CallLua(vm, callback)
+		err := util.CallLua(vm, callback, nil)
 		if err != nil {
 			fmt.Println(err.Error())
 			return

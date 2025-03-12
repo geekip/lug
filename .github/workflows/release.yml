@@ -48,8 +48,8 @@ jobs:
             IFS=' ' read -r os arch format ext <<< "$target"
             binary_name="lug"
             [[ "$os" == "windows" ]] && binary_name="lug.exe"
-            
-            GOOS=$os GOARCH=$arch go build -o $binary_name . 
+
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -trimpath -o $binary_name . 
             
             if [[ "$os" == "linux" ]] || [[ "$os" == "windows" && "$arch" != "arm64" ]]; then
               upx $binary_name

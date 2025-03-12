@@ -26,7 +26,7 @@ func makeRegexp(pattern string) *regexp.Regexp {
 	if re, ok := regexCache.Load(pattern); ok {
 		return re.(*regexp.Regexp)
 	}
-	re := regexp.MustCompile("^" + pattern + "$")
+	re := regexp.MustCompile(`^` + pattern + `$`)
 	regexCache.Store(pattern, re)
 	return re
 }
@@ -50,7 +50,7 @@ func (n *Node) add(method, pattern string, handler Handler, middlewares []Handle
 	// 	return nil, fmt.Errorf("duplicate route for method %s and pattern %s", method, pattern)
 	// }
 
-	segments := strings.Split(pattern, "/")
+	segments := strings.Split(pattern, `/`)
 	lastIndex := len(segments) - 1
 
 	for i, segment := range segments {
@@ -59,13 +59,13 @@ func (n *Node) add(method, pattern string, handler Handler, middlewares []Handle
 		}
 
 		// Handle parameter segments wrapped in {}
-		if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") {
+		if strings.HasPrefix(segment, `{`) && strings.HasSuffix(segment, `}`) {
 			param := segment[1 : len(segment)-1]
-			parts := strings.SplitN(param, ":", 2)
+			parts := strings.SplitN(param, `:`, 2)
 			paramName := parts[0]
 
 			// Validate wildcard position (must be last segment)
-			if strings.HasPrefix(paramName, "*") {
+			if strings.HasPrefix(paramName, `*`) {
 				if i != lastIndex {
 					return nil, fmt.Errorf("router wildcard %s must be the last segment", segment)
 				}
@@ -101,7 +101,7 @@ func (n *Node) add(method, pattern string, handler Handler, middlewares []Handle
 func (n *Node) find(method, url string) *Node {
 
 	params := &lua.LTable{}
-	segments := strings.Split(url, "/")
+	segments := strings.Split(url, `/`)
 	for i, segment := range segments {
 		if segment == "" {
 			continue
@@ -126,8 +126,8 @@ func (n *Node) find(method, url string) *Node {
 			n = paramNode
 
 			// Handle wildcard parameter (capture remaining path segments)
-			if strings.HasPrefix(paramName, "*") {
-				val := lua.LString(strings.Join(segments[i:], "/"))
+			if strings.HasPrefix(paramName, `*`) {
+				val := lua.LString(strings.Join(segments[i:], `/`))
 				params.RawSetString(paramName, val)
 				break
 			}
@@ -142,7 +142,7 @@ func (n *Node) find(method, url string) *Node {
 		// Find method handler, fallback to wildcard if exists
 		handler := n.methods[method]
 		if handler == nil {
-			handler = n.methods["*"]
+			handler = n.methods[`*`]
 		}
 
 		n.params = params

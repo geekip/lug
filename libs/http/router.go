@@ -25,7 +25,7 @@ var (
 
 	defaultHeaders = map[string]string{
 		"Content-Type": "text/html;charset=utf-8",
-		"Server":       pkg.Name + "/" + pkg.Version,
+		"Server":       pkg.Name + `/` + pkg.Version,
 	}
 )
 
@@ -38,8 +38,8 @@ func (r *Router) pathJoin(pattern string) string {
 		return r.prefix
 	}
 	finalPath := path.Join(r.prefix, pattern)
-	if strings.HasSuffix(pattern, "/") && !strings.HasSuffix(finalPath, "/") {
-		return finalPath + "/"
+	if strings.HasSuffix(pattern, `/`) && !strings.HasSuffix(finalPath, `/`) {
+		return finalPath + `/`
 	}
 	return finalPath
 }
@@ -71,7 +71,7 @@ func (r *Router) method(methods ...string) *Router {
 func (r *Router) handle(pattern string, handler Handler) *Router {
 	fullPattern := r.pathJoin(pattern)
 	if len(r.methods) == 0 {
-		r.methods = append(r.methods, "*")
+		r.methods = append(r.methods, `*`)
 	}
 	for _, method := range r.methods {
 		method = strings.ToUpper(method)

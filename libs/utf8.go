@@ -8,7 +8,7 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type Utf8 struct{ util.Module }
+type Utf8 struct{ *util.Module }
 
 var Utf8charpattern = lua.LString([]byte{
 	'[', 0, '-', 0x7f, 0xc2, '-', 0xf4, ']',
@@ -16,21 +16,20 @@ var Utf8charpattern = lua.LString([]byte{
 })
 
 func Uft8Loader(L *lua.LState) int {
-
 	mod := &Utf8{
-		Module: *util.GetModule(L),
-	}
-	mod.Fn.RawSetString("charpattern", Utf8charpattern)
-
-	api := util.LGFunctions{
-		"char":      mod.char,
-		"codes":     mod.codes,
-		"codepoint": mod.codepoint,
-		"len":       mod.len,
-		"offset":    mod.offset,
+		Module: util.NewModule(L, nil),
 	}
 
-	return mod.SetFuncs(api)
+	mod.SetMethods(util.Methods{
+		"charpattern": Utf8charpattern,
+		"char":        mod.char,
+		"codes":       mod.codes,
+		"codepoint":   mod.codepoint,
+		"len":         mod.len,
+		"offset":      mod.offset,
+	})
+
+	return mod.Self()
 }
 
 func (u *Utf8) char(ls *lua.LState) int {

@@ -17,26 +17,28 @@ import (
 )
 
 type Server struct {
-	util.Module
-	router *Router
+	*util.Module
+	router     *Router
+	httpServer *http.Server
+	config     *serverConfig
 }
 
-func ServerLoader(L *lua.LState) *lua.LTable {
-	mod := newServer(L, newRouter())
-	mod.Fn.RawSetString("listen", L.NewFunction(mod.listen))
-	mod.Fn.RawSetString("group", L.NewFunction(mod.group))
-	return mod.Fn
+type serverConfig struct {
+	certFile     string
+	keyFile      string
+	readTimeout  time.Duration
+	writeTimeout time.Duration
+	idleTimeout  time.Duration
+	error        *lua.LFunction
+	success      *lua.LFunction
+	shutdown     *lua.LFunction
 }
 
-func newServer(L *lua.LState, router *Router) *Server {
-	mod := &Server{
-		Module: *util.GetModule(L),
-		router: router,
-	}
-	api := util.LGFunctions{
+func extendMethod(mod *Server) util.Methods {
+	return util.Methods{
 		"handle":  mod.handle,
 		"use":     mod.use,
-		"any":     mod.method("*"),
+		"any":     mod.method(`*`),
 		"connect": mod.method(http.MethodConnect),
 		"delete":  mod.method(http.MethodDelete),
 		"get":     mod.method(http.MethodGet),
@@ -47,14 +49,30 @@ func newServer(L *lua.LState, router *Router) *Server {
 		"put":     mod.method(http.MethodPut),
 		"trace":   mod.method(http.MethodTrace),
 	}
-	mod.SetFuncs(api)
-	return mod
+}
+
+func ServerLoader(L *lua.LState) *lua.LTable {
+	mod := &Server{
+		Module: util.NewModule(L, nil),
+		router: newRouter(),
+	}
+	mod.SetMethods(extendMethod(mod), util.Methods{
+		"listen":   mod.listen,
+		"shutdown": mod.shutdown,
+		"group":    mod.group,
+	})
+
+	return mod.Method
 }
 
 func (s *Server) group(L *lua.LState) int {
 	pattern := L.CheckString(1)
-	mod := newServer(L, s.router.group(pattern))
-	return mod.Self()
+	mod := &Server{
+		Module: util.NewModule(L, nil),
+		router: s.router.group(pattern),
+	}
+	methods := extendMethod(mod)
+	return mod.SetMethods(methods).Self()
 }
 
 func (s *Server) use(L *lua.LState) int {
@@ -79,8 +97,7 @@ func (s *Server) handle(L *lua.LState) int {
 }
 
 func (s *Server) handleRoute(method string) int {
-	path := s.Vm.CheckString(1)
-	handler := s.Vm.CheckFunction(2)
+	path, handler := s.Vm.CheckString(1), s.Vm.CheckFunction(2)
 	s.router.method(method).handle(path, s.createLuaHandler(handler))
 	return s.Self()
 }
@@ -88,31 +105,102 @@ func (s *Server) handleRoute(method string) int {
 func (s *Server) createLuaHandler(handler *lua.LFunction) Handler {
 	return func(ctx *Context) string {
 		s.Vm.SetTop(0) // 清空栈
-		ctxApi := ctx.newContextApi(s.Vm)
+		ctxApi := ctx.getLuaApi(s.Vm)
 		if err := util.CallLua(s.Vm, handler, ctxApi); err != nil {
 			ctx.Error(err.Error(), http.StatusInternalServerError)
 		}
-		return s.Vm.Get(-1).String()
+		ret := s.Vm.Get(-1).String()
+		s.Vm.Pop(1)
+		return ret
 	}
 }
 
 func (s *Server) listen(L *lua.LState) int {
-	addr := L.CheckString(1)
-	opts := L.CheckTable(2)
+	addr, opts := L.CheckString(1), L.OptTable(2, L.NewTable())
 
-	certFile := util.GetStringFromTable(L, opts, "cert")
-	keyFile := util.GetStringFromTable(L, opts, "key")
-	readTimeout := time.Duration(util.GetIntFromTable(L, opts, "readTimeout"))
-	writeTimeout := time.Duration(util.GetIntFromTable(L, opts, "writeTimeout"))
-	idleTimeout := time.Duration(util.GetIntFromTable(L, opts, "idleTimeout"))
+	callback := L.NewFunction(func(l *lua.LState) int {
+		fmt.Println(l.CheckString(1))
+		return 0
+	})
+
+	config := serverConfig{
+		readTimeout:  30 * time.Second,
+		writeTimeout: 60 * time.Second,
+		idleTimeout:  90 * time.Second,
+		error:        callback,
+		success:      callback,
+		shutdown:     callback,
+	}
+
+	opts.ForEach(func(k lua.LValue, v lua.LValue) {
+
+		if k.String() == `certFile` {
+			if val, ok := v.(lua.LString); ok {
+				config.certFile = val.String()
+			} else {
+				L.ArgError(2, "certFile must be string")
+			}
+		}
+		if k.String() == `keyFile` {
+			if val, ok := v.(lua.LString); ok {
+				config.keyFile = val.String()
+			} else {
+				L.ArgError(2, "keyFile must be number")
+			}
+		}
+		if k.String() == `readTimeout` {
+			if val, ok := v.(lua.LNumber); ok {
+				config.readTimeout = time.Duration(int(val)) * time.Second
+			} else {
+				L.ArgError(2, "readTimeout must be number(time second)")
+			}
+		}
+		if k.String() == `writeTimeout` {
+			if val, ok := v.(lua.LNumber); ok {
+				config.writeTimeout = time.Duration(int(val)) * time.Second
+			} else {
+				L.ArgError(2, "writeTimeout must be number(time second)")
+			}
+		}
+		if k.String() == `idleTimeout` {
+			if val, ok := v.(lua.LNumber); ok {
+				config.idleTimeout = time.Duration(int(val)) * time.Second
+			} else {
+				L.ArgError(2, "idleTimeout must be number(time second)")
+			}
+		}
+		if k.String() == `error` {
+			if val, ok := v.(*lua.LFunction); ok {
+				config.error = val
+			} else {
+				L.ArgError(2, "error must be function")
+			}
+		}
+		if k.String() == `success` {
+			if val, ok := v.(*lua.LFunction); ok {
+				config.success = val
+			} else {
+				L.ArgError(2, "success must be function")
+			}
+		}
+		if k.String() == `shutdown` {
+			if val, ok := v.(*lua.LFunction); ok {
+				config.shutdown = val
+			} else {
+				L.ArgError(2, "shutdown must be function")
+			}
+		}
+	})
+	s.config = &config
 
 	server := &http.Server{
 		Addr:         addr,
 		Handler:      s.router,
-		ReadTimeout:  readTimeout * time.Millisecond,
-		WriteTimeout: writeTimeout * time.Millisecond,
-		IdleTimeout:  idleTimeout * time.Millisecond,
+		ReadTimeout:  config.readTimeout,
+		WriteTimeout: config.writeTimeout,
+		IdleTimeout:  config.idleTimeout,
 	}
+	s.httpServer = server
 
 	serverReadyChan := make(chan struct{})
 	serverErrorChan := make(chan error, 1)
@@ -122,9 +210,8 @@ func (s *Server) listen(L *lua.LState) int {
 	var listener net.Listener
 	var serverError error
 
-	// 处理TLS配置
-	if certFile != "" && keyFile != "" {
-		if cert, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+	if config.certFile != "" && config.keyFile != "" {
+		if cert, err := tls.LoadX509KeyPair(config.certFile, config.keyFile); err != nil {
 			serverErrorChan <- err
 		} else {
 			listener, serverError = tls.Listen("tcp", addr, &tls.Config{
@@ -152,10 +239,10 @@ func (s *Server) listen(L *lua.LState) int {
 
 	select {
 	case <-serverReadyChan:
-		callLua(L, opts, "success", "server is listening on "+addr)
+		s.callLua(config.success, "server is listening on "+addr)
 	case err := <-serverErrorChan:
 		if err != nil {
-			callLua(L, opts, "error", err.Error())
+			s.callLua(config.error, err.Error())
 			return 0
 		}
 	}
@@ -164,25 +251,35 @@ func (s *Server) listen(L *lua.LState) int {
 	case sig := <-interruptChan:
 		fmt.Printf("signal: %v\n", sig)
 	case err := <-serverErrorChan:
-		callLua(L, opts, "error", err.Error())
+		s.callLua(config.error, err.Error())
 	}
 
+	s.shutdown(L)
+	return 0
+}
+
+func (s *Server) shutdown(L *lua.LState) int {
+	if s.httpServer == nil {
+		s.callLua(s.config.error, "service not started")
+		os.Exit(1)
+		return 0
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err == nil {
-		callLua(L, opts, "shutdown", "server gracefully stopped")
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		s.callLua(s.config.error, err.Error())
+		os.Exit(1)
+	} else {
+		s.callLua(s.config.shutdown, "server gracefully stopped")
+		os.Exit(0)
 	}
 
 	return 0
 }
 
-func callLua(L *lua.LState, opts *lua.LTable, name string, args ...interface{}) {
-	cb := L.GetField(opts, name)
-	if cb.Type() == lua.LTNil {
-		return
-	}
-	if err := util.CallLua(L, cb, args...); err != nil {
-		L.RaiseError("callback execution error: %v", err)
+func (s *Server) callLua(callback *lua.LFunction, args ...interface{}) {
+	if err := util.CallLua(s.Vm, callback, args...); err != nil {
+		s.Vm.RaiseError("callback execution error: %v", err)
 	}
 }

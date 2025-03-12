@@ -80,14 +80,11 @@ func (ctx *Context) error(L *lua.LState) int {
 	return 0
 }
 
-func (ctx *Context) newContextApi(L *lua.LState) *lua.LTable {
-	mod := util.GetModule(L)
-
-	mod.Fn.RawSetString("method", ctx.Method)
-	mod.Fn.RawSetString("path", ctx.Path)
-	mod.Fn.RawSetString("params", ctx.Params)
-
-	api := util.LGFunctions{
+func (ctx *Context) getLuaApi(L *lua.LState) *lua.LTable {
+	mod := util.NewModule(L, util.Methods{
+		"method":      ctx.Method,
+		"path":        ctx.Path,
+		"params":      ctx.Params,
 		"getData":     ctx.getData,
 		"setData":     ctx.setData,
 		"setStatus":   ctx.setStatus,
@@ -103,27 +100,26 @@ func (ctx *Context) newContextApi(L *lua.LState) *lua.LTable {
 		"error":       ctx.error,
 		"redirect":    ctx.redirect,
 		"getClientIp": ctx.getClientIp,
-	}
-	mod.SetFuncs(api)
-
-	if ctx.Next != nil {
-		mod.Fn.RawSetString("next", L.NewFunction(ctx.next))
-	}
-
-	return mod.Fn
+		"next":        ctx.next,
+	})
+	return mod.Method
 }
 
 func (ctx *Context) next(L *lua.LState) int {
-	body := ctx.Next()
+	var body string
+	if ctx.Next != nil {
+		body = ctx.Next()
+	} else {
+		body = ""
+	}
 	L.Push(lua.LString(body))
 	return 1
 }
 
 func (ctx *Context) setData(L *lua.LState) int {
-	key := L.CheckString(1)
-	val := L.CheckAny(2)
+	key, val := L.CheckString(1), L.CheckAny(2)
 
-	if key == "" {
+	if strings.TrimSpace(key) == "" {
 		L.ArgError(1, "key cannot be empty")
 		return 0
 	}
@@ -138,7 +134,7 @@ func (ctx *Context) setData(L *lua.LState) int {
 func (ctx *Context) getData(L *lua.LState) int {
 
 	key := L.CheckString(1)
-	if key == "" {
+	if strings.TrimSpace(key) == "" {
 		L.ArgError(1, "key cannot be empty")
 		return 0
 	}
@@ -153,7 +149,7 @@ func (ctx *Context) getData(L *lua.LState) int {
 
 func (ctx *Context) setStatus(L *lua.LState) int {
 	code := L.CheckInt(1)
-	if code >= 100 && code < 600 {
+	if util.CheckStatusCode(code) {
 		ctx.Status = lua.LNumber(code)
 	}
 	return 0
@@ -166,9 +162,8 @@ func (ctx *Context) getQuery(L *lua.LState) int {
 }
 
 func (ctx *Context) setHeader(L *lua.LState) int {
-	key := L.CheckString(1)
-	val := L.CheckString(2)
-	if val == "" {
+	key, val := L.CheckString(1), L.CheckString(2)
+	if strings.TrimSpace(val) == "" {
 		ctx.Response.Header().Del(key)
 	} else {
 		ctx.Response.Header().Set(key, val)
@@ -188,31 +183,31 @@ func (ctx *Context) setCookie(L *lua.LState) int {
 	opts.ForEach(func(key, val lua.LValue) {
 		k := key.String()
 		switch k {
-		case "Name":
+		case `Name`:
 			if v, ok := val.(lua.LString); ok {
 				cookie.Name = v.String()
 			} else {
 				L.ArgError(1, "Name must be string")
 			}
-		case "Value":
+		case `Value`:
 			if v, ok := val.(lua.LString); ok {
 				cookie.Value = v.String()
 			} else {
 				L.ArgError(1, "Value must be a string")
 			}
-		case "Path":
+		case `Path`:
 			if v, ok := val.(lua.LString); ok {
 				cookie.Path = v.String()
 			} else {
 				L.ArgError(1, "Path must be a string")
 			}
-		case "Domain":
+		case `Domain`:
 			if v, ok := val.(lua.LString); ok {
 				cookie.Domain = v.String()
 			} else {
 				L.ArgError(1, "Domain must be a string")
 			}
-		case "Expires":
+		case `Expires`:
 			if v, ok := val.(lua.LString); ok {
 				t, err := time.Parse(time.RFC3339, v.String())
 				if err != nil {
@@ -222,19 +217,19 @@ func (ctx *Context) setCookie(L *lua.LState) int {
 			} else {
 				L.ArgError(1, "Expires must be a string")
 			}
-		case "MaxAge":
+		case `MaxAge`:
 			if v, ok := val.(lua.LNumber); ok {
 				cookie.MaxAge = int(v)
 			} else {
 				L.ArgError(1, "MaxAge must be a number")
 			}
-		case "Secure":
+		case `Secure`:
 			if v, ok := val.(lua.LBool); ok {
 				cookie.Secure = bool(v)
 			} else {
 				L.ArgError(1, "Secure must be a boolean")
 			}
-		case "HttpOnly":
+		case `HttpOnly`:
 			if v, ok := val.(lua.LBool); ok {
 				cookie.HttpOnly = bool(v)
 			} else {
@@ -283,31 +278,28 @@ func (ctx *Context) getCookie(L *lua.LState) int {
 }
 
 func (ctx *Context) files(L *lua.LState) int {
-	path := L.CheckString(1)
+	fs := http.FileServer(http.Dir(L.CheckString(1)))
 	key := ctx.Params.RawGetString("*").String()
 	basePath := strings.TrimSuffix(ctx.Path.String(), key)
-	http.StripPrefix(basePath, http.FileServer(http.Dir(path))).ServeHTTP(ctx.Response, ctx.Request)
+	http.StripPrefix(basePath, fs).ServeHTTP(ctx.Response, ctx.Request)
 	ctx.End()
 	return 0
 }
 
 func (ctx *Context) file(L *lua.LState) int {
-	path := L.CheckString(1)
-	http.ServeFile(ctx.Response, ctx.Request, path)
+	http.ServeFile(ctx.Response, ctx.Request, L.CheckString(1))
 	ctx.End()
 	return 0
 }
 
 func (ctx *Context) basicAuth(L *lua.LState) int {
-	u := L.CheckString(1)
-	p := L.CheckString(2)
-
+	u, p := L.CheckString(1), L.CheckString(2)
 	if user, pass, ok := ctx.Request.BasicAuth(); !ok || user != u || pass != p {
 		L.Push(lua.LFalse)
-		return 1
+	} else {
+		L.Push(lua.LTrue)
 	}
 
-	L.Push(lua.LTrue)
 	return 1
 }
 
@@ -356,20 +348,3 @@ func (ctx *Context) getClientIp(L *lua.LState) int {
 	L.Push(lua.LString(cip))
 	return 1
 }
-
-// func (ctx *Context) getClientIp(L *lua.LState) int {
-// 	var cip string
-// 	if ip := ctx.Request.Header.Get("X-Forwarded-For"); ip != "" {
-// 		ips := strings.Split(ip, ",")
-// 		if len(ips) > 0 {
-// 			ip = strings.TrimSpace(ips[0])
-// 		}
-// 		cip = ip
-// 	} else if ip := ctx.Request.Header.Get("X-Real-IP"); ip != "" {
-// 		cip = ip
-// 	} else {
-// 		cip = strings.Split(ctx.Request.RemoteAddr, ":")[0]
-// 	}
-// 	L.Push(lua.LString(cip))
-// 	return 1
-// }

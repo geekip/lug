@@ -103,7 +103,7 @@ Available options are:
 	}
 
 	// Set Lua arg table
-	L.SetGlobal("arg", arg)
+	L.SetGlobal(`arg`, arg)
 
 	// Preload Lua modules
 	libs.Preload(L)

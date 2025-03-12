@@ -8,22 +8,24 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type Json struct{ util.Module }
+type Json struct{ *util.Module }
 
 func JsonLoader(L *lua.LState) int {
-	mod := &Json{Module: *util.GetModule(L)}
-	api := util.LGFunctions{
+	mod := &Json{
+		Module: util.NewModule(L, nil),
+	}
+	mod.SetMethods(util.Methods{
 		"encode": mod.Encode,
 		"decode": mod.Decode,
-	}
-	return mod.SetFuncs(api)
+	})
+	return mod.Self()
 }
 
 func (j *Json) Encode(L *lua.LState) int {
 	value := L.CheckAny(1)
 	data, err := json.Marshal(util.ToGoValue(value, true))
 	if err != nil {
-		return j.Error(err)
+		return j.NilError(err)
 	}
 	return j.Push(lua.LString(data))
 }
@@ -32,7 +34,7 @@ func (j *Json) Decode(L *lua.LState) int {
 	str := L.CheckString(1)
 	var goValue interface{}
 	if err := json.Unmarshal([]byte(str), &goValue); err != nil {
-		return j.Error(err)
+		return j.NilError(err)
 	}
 	return j.Push(util.ToLuaValue(goValue))
 }

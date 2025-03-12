@@ -1,16 +1,16 @@
 package libs
 
 import (
+	"lug/libs/db"
 	"lug/libs/http"
-	"lug/util"
 
 	lua "github.com/yuin/gopher-lua"
 )
 
 var LibPrefix = ""
 
-var Libs = util.LGFunctions{
-	"db":       DbLoader,
+var Libs = map[string]lua.LGFunction{
+	"db":       db.Loader,
 	"fs":       FsLoader,
 	"http":     http.Loader,
 	"json":     JsonLoader,

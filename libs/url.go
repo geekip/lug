@@ -7,20 +7,20 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type Url struct{ util.Module }
+type Url struct{ *util.Module }
 
 func UrlLoader(L *lua.LState) int {
 	mod := &Url{
-		Module: *util.GetModule(L),
+		Module: util.NewModule(L, nil),
 	}
-	api := util.LGFunctions{
+	mod.SetMethods(util.Methods{
 		"queryEscape":   mod.QueryEscape,
 		"queryUnescape": mod.QueryUnescape,
 		"parse":         mod.ParseURL,
 		"new":           mod.BuildURL,
 		"resolve":       mod.resolveURL,
-	}
-	return mod.SetFuncs(api)
+	})
+	return mod.Self()
 }
 
 // QueryEscape lua http.query_escape(string) returns escaped string
@@ -35,7 +35,7 @@ func (u *Url) QueryUnescape(L *lua.LState) int {
 	query := L.CheckString(1)
 	url, err := url.QueryUnescape(query)
 	if err != nil {
-		return u.Error(err)
+		return u.NilError(err)
 	}
 	return u.Push(lua.LString(url))
 }
@@ -44,7 +44,7 @@ func (u *Url) QueryUnescape(L *lua.LState) int {
 func (u *Url) ParseURL(L *lua.LState) int {
 	U, err := url.Parse(L.CheckString(1))
 	if err != nil {
-		return u.Error(err)
+		return u.NilError(err)
 	}
 
 	t := L.NewTable()
@@ -154,17 +154,16 @@ func (u *Url) BuildURL(L *lua.LState) int {
 }
 
 func (u *Url) resolveURL(L *lua.LState) int {
-	from := L.CheckString(1)
-	to := L.CheckString(2)
+	from, to := L.CheckString(1), L.CheckString(2)
 
 	fromUrl, err := url.Parse(from)
 	if err != nil {
-		return u.Error(err)
+		return u.NilError(err)
 	}
 
 	toUrl, err := url.Parse(to)
 	if err != nil {
-		return u.Error(err)
+		return u.NilError(err)
 	}
 
 	url := fromUrl.ResolveReference(toUrl).String()

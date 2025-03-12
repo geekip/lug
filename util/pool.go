@@ -6,12 +6,12 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type vmPool struct {
+type Pool struct {
 	mut sync.Mutex
 	vms []*lua.LState
 }
 
-func (pl *vmPool) Get() *lua.LState {
+func (pl *Pool) Get() *lua.LState {
 	pl.mut.Lock()
 	defer pl.mut.Unlock()
 	n := len(pl.vms)
@@ -23,26 +23,29 @@ func (pl *vmPool) Get() *lua.LState {
 	return x
 }
 
-func (pl *vmPool) New() *lua.LState {
+func (pl *Pool) New() *lua.LState {
 	return lua.NewState()
 }
 
-func (pl *vmPool) Put(L *lua.LState) {
+func (pl *Pool) Put(L *lua.LState) {
 	pl.mut.Lock()
 	defer pl.mut.Unlock()
 	pl.vms = append(pl.vms, L)
 }
 
-func (pl *vmPool) Shutdown() {
-	for _, L := range pl.vms {
-		L.Close()
+func (pl *Pool) Shutdown() {
+	pl.mut.Lock()
+	defer pl.mut.Unlock()
+
+	for _, vm := range pl.vms {
+		vm.Close()
 	}
 }
 
-func (pl *vmPool) Size() int {
+func (pl *Pool) Size() int {
 	return len(pl.vms)
 }
 
-var VmPool = &vmPool{
+var VmPool = &Pool{
 	vms: make([]*lua.LState, 0),
 }

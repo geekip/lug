@@ -17,7 +17,7 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type Client struct{ util.Module }
+type Client struct{ *util.Module }
 
 type requestParams struct {
 	userAgent   string
@@ -31,59 +31,55 @@ type requestParams struct {
 }
 
 type response struct {
-	status  lua.LNumber
-	headers *lua.LTable
-	body    lua.LString
+	status   lua.LNumber
+	headers  *lua.LTable
+	body     lua.LString
+	bodySize lua.LNumber
 }
 
 func ClientLoader(L *lua.LState) *lua.LTable {
 	mod := &Client{
-		Module: *util.GetModule(L),
+		Module: util.NewModule(L, nil),
 	}
-	mod.SetFuncs(util.LGFunctions{
-		"request": mod.apiRequest,
-		"connect": mod.apiHttp(http.MethodConnect),
-		"delete":  mod.apiHttp(http.MethodDelete),
-		"get":     mod.apiHttp(http.MethodGet),
-		"head":    mod.apiHttp(http.MethodHead),
-		"options": mod.apiHttp(http.MethodOptions),
-		"patch":   mod.apiHttp(http.MethodPatch),
-		"post":    mod.apiHttp(http.MethodPost),
-		"put":     mod.apiHttp(http.MethodPut),
-		"trace":   mod.apiHttp(http.MethodTrace),
+	mod.SetMethods(util.Methods{
+		"request": mod.request(""),
+		"connect": mod.request(http.MethodConnect),
+		"delete":  mod.request(http.MethodDelete),
+		"get":     mod.request(http.MethodGet),
+		"head":    mod.request(http.MethodHead),
+		"options": mod.request(http.MethodOptions),
+		"patch":   mod.request(http.MethodPatch),
+		"post":    mod.request(http.MethodPost),
+		"put":     mod.request(http.MethodPut),
+		"trace":   mod.request(http.MethodTrace),
 	})
-	return mod.Fn
+	return mod.Method
 }
 
-func (c *Client) apiRequest(L *lua.LState) int {
-	method := L.CheckString(1)
-	url := L.CheckString(2)
-	opts := L.OptTable(3, L.NewTable())
-	return c.doRequest(method, url, opts)
-}
-
-func (c *Client) apiHttp(method string) lua.LGFunction {
+func (c *Client) request(method string) lua.LGFunction {
 	return func(L *lua.LState) int {
-		url := L.CheckString(1)
-		opts := L.OptTable(2, L.NewTable())
-		return c.doRequest(method, url, opts)
+		index := 0
+		if method == "" {
+			method = strings.ToUpper(L.CheckString(1))
+			index++
+		}
+		url := L.CheckString(1 + index)
+		opts := L.OptTable(2+index, L.NewTable())
+
+		params := c.parseOptions(opts)
+		response, err := c.parseResponse(method, url, params)
+		if err != nil {
+			return c.NilError(err)
+		}
+
+		resTable := L.NewTable()
+		resTable.RawSetString("status", response.status)
+		resTable.RawSetString("headers", response.headers)
+		resTable.RawSetString("body", response.body)
+		resTable.RawSetString("body_size", response.bodySize)
+
+		return c.Push(resTable)
 	}
-}
-
-func (c *Client) doRequest(method, url string, opts *lua.LTable) int {
-
-	params := c.parseOptions(opts)
-	response, err := c.parseResponse(method, url, params)
-	if err != nil {
-		return c.Error(err)
-	}
-
-	resTable := c.Vm.NewTable()
-	resTable.RawSetString("status", response.status)
-	resTable.RawSetString("headers", response.headers)
-	resTable.RawSetString("body", response.body)
-
-	return c.Push(resTable)
 }
 
 func (c *Client) parseResponse(method, URL string, params *requestParams) (*response, error) {
@@ -130,7 +126,9 @@ func (c *Client) parseResponse(method, URL string, params *requestParams) (*resp
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %v", err)
 	}
+
 	response.body = lua.LString(body)
+	response.bodySize = lua.LNumber(len(body))
 	return response, nil
 }
 
@@ -141,7 +139,6 @@ func (c *Client) createRequest(method, url string, params *requestParams) (*http
 	}
 
 	request.Header = params.headers.Clone()
-
 	if params.userAgent != "" {
 		request.Header.Set("User-Agent", params.userAgent)
 	}

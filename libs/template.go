@@ -10,7 +10,7 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type Template struct{ util.Module }
+type Template struct{ *util.Module }
 
 type templateEntry struct {
 	once sync.Once
@@ -22,13 +22,13 @@ var templateCache sync.Map
 
 func TemplateLoader(L *lua.LState) int {
 	mod := &Template{
-		Module: *util.GetModule(L),
+		Module: util.NewModule(L, nil),
 	}
-	api := util.LGFunctions{
+	mod.SetMethods(util.Methods{
 		"file":   mod.executeFile,
 		"string": mod.executeString,
-	}
-	return mod.SetFuncs(api)
+	})
+	return mod.Self()
 }
 
 func (t *Template) executeFile(L *lua.LState) int {
@@ -42,7 +42,7 @@ func (t *Template) executeFile(L *lua.LState) int {
 	})
 
 	if entry.err != nil {
-		return t.Error(entry.err)
+		return t.NilError(entry.err)
 	}
 	return t.executeTemplate(entry.tmpl)
 }
@@ -51,7 +51,7 @@ func (t *Template) executeString(L *lua.LState) int {
 	tmplStr := L.CheckString(1)
 	tmpl, err := template.New("T").Parse(tmplStr)
 	if err != nil {
-		return t.Error(err)
+		return t.NilError(err)
 	}
 	return t.executeTemplate(tmpl)
 }
@@ -63,7 +63,7 @@ func (t *Template) executeTemplate(tmpl *template.Template) int {
 	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return t.Error(err)
+		return t.NilError(err)
 	}
 	return t.Push(lua.LString(buf.String()))
 }
