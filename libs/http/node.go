@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	lua "github.com/yuin/gopher-lua"
 )
@@ -18,8 +19,11 @@ type Node struct {
 	paramName   string
 	paramNode   *Node
 	regex       *regexp.Regexp
+	mutex       sync.Mutex
 	isEnd       bool
 }
+
+var regexCache sync.Map
 
 // makeRegexp compiles and caches regular expressions to avoid redundant compilation
 func makeRegexp(pattern string) *regexp.Regexp {
@@ -42,10 +46,13 @@ func newNode() *Node {
 
 // add registers a route handler for the given method and pattern
 // Returns error for invalid inputs or route conflicts
-func (n *Node) add(method, pattern string, handler Handler, middlewares []Handler) (*Node, error) {
+func (n *Node) add(method, pattern string, handler Handler, middlewares []Handler) error {
 	if method == "" || pattern == "" || handler == nil {
-		return nil, errors.New("http server Handle error")
+		return errors.New("http server Handle error")
 	}
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+
 	// if existing, ok := n.methods[method]; ok && existing != nil {
 	// 	return nil, fmt.Errorf("duplicate route for method %s and pattern %s", method, pattern)
 	// }
@@ -67,7 +74,7 @@ func (n *Node) add(method, pattern string, handler Handler, middlewares []Handle
 			// Validate wildcard position (must be last segment)
 			if strings.HasPrefix(paramName, `*`) {
 				if i != lastIndex {
-					return nil, fmt.Errorf("router wildcard %s must be the last segment", segment)
+					return fmt.Errorf("router wildcard %s must be the last segment", segment)
 				}
 			}
 			// Create parameter node if not exists
@@ -93,7 +100,7 @@ func (n *Node) add(method, pattern string, handler Handler, middlewares []Handle
 	n.isEnd = true
 	n.methods[method] = handler
 	n.middlewares = append(n.middlewares, middlewares...)
-	return n, nil
+	return nil
 }
 
 // find traverses the routing tree to match URL segments and collect parameters

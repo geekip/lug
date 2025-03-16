@@ -1,15 +1,13 @@
 package http
 
 import (
-	"lug/util"
-
 	lua "github.com/yuin/gopher-lua"
 )
 
 func Loader(L *lua.LState) int {
-	mod := util.NewModule(L, util.Methods{
-		"server": ServerLoader(L),
-		"client": ClientLoader(L),
-	})
-	return mod.Self()
+	mod := L.NewTable()
+	mod.RawSetString("client", newClient(L))
+	mod.RawSetString("server", newServer(L))
+	L.Push(mod)
+	return 1
 }

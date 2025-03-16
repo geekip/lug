@@ -65,9 +65,16 @@ Available options are:
 		optInteractive = true
 	}
 
+	// ctx, cancel := context.WithCancel(context.Background())
+
 	// Initialize Lua state
 	L := util.VmPool.Get()
-	defer util.VmPool.Put(L)
+	defer func() {
+		util.VmPool.Put(L)
+		// cancel()
+	}()
+
+	// L.SetContext(ctx)
 
 	// L := lua.NewState()
 	// defer L.Close()

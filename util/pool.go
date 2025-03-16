@@ -11,6 +11,10 @@ type Pool struct {
 	vms []*lua.LState
 }
 
+var VmPool = &Pool{
+	vms: make([]*lua.LState, 0),
+}
+
 func (pl *Pool) Get() *lua.LState {
 	pl.mut.Lock()
 	defer pl.mut.Unlock()
@@ -44,8 +48,4 @@ func (pl *Pool) Shutdown() {
 
 func (pl *Pool) Size() int {
 	return len(pl.vms)
-}
-
-var VmPool = &Pool{
-	vms: make([]*lua.LState, 0),
 }

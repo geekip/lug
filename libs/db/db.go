@@ -70,10 +70,13 @@ func openDatabase(L *lua.LState) int {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(err.Error()))
 		return 2
+		// L.RaiseError(err.Error())
+		// L.ArgError(1, err.Error())
+		return 0
 	}
 
 	mod := &DB{
-		Module: util.NewModule(L, nil),
+		Module: util.NewModule(L),
 		db:     db,
 	}
 
@@ -197,7 +200,7 @@ func (d *DB) Transaction(L *lua.LState) int {
 	}()
 
 	mod := &DB{
-		Module: util.NewModule(L, nil),
+		Module: util.NewModule(L),
 		db:     d.db,
 		tx:     tx,
 	}

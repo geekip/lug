@@ -139,6 +139,6 @@ func ToGoValue(lv lua.LValue, likeJson bool) interface{} {
 	case *lua.LUserData:
 		return v.Value
 	default:
-		return v.String()
+		return v
 	}
 }

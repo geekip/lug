@@ -37,23 +37,23 @@ type response struct {
 	bodySize lua.LNumber
 }
 
-func ClientLoader(L *lua.LState) *lua.LTable {
-	mod := &Client{
-		Module: util.NewModule(L, nil),
+func newClient(L *lua.LState) *lua.LTable {
+	client := &Client{
+		Module: util.NewModule(L),
 	}
-	mod.SetMethods(util.Methods{
-		"request": mod.request(""),
-		"connect": mod.request(http.MethodConnect),
-		"delete":  mod.request(http.MethodDelete),
-		"get":     mod.request(http.MethodGet),
-		"head":    mod.request(http.MethodHead),
-		"options": mod.request(http.MethodOptions),
-		"patch":   mod.request(http.MethodPatch),
-		"post":    mod.request(http.MethodPost),
-		"put":     mod.request(http.MethodPut),
-		"trace":   mod.request(http.MethodTrace),
+	client.SetMethods(util.Methods{
+		"request": client.request(""),
+		"connect": client.request(http.MethodConnect),
+		"delete":  client.request(http.MethodDelete),
+		"get":     client.request(http.MethodGet),
+		"head":    client.request(http.MethodHead),
+		"options": client.request(http.MethodOptions),
+		"patch":   client.request(http.MethodPatch),
+		"post":    client.request(http.MethodPost),
+		"put":     client.request(http.MethodPut),
+		"trace":   client.request(http.MethodTrace),
 	})
-	return mod.Method
+	return client.Method
 }
 
 func (c *Client) request(method string) lua.LGFunction {

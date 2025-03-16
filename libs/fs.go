@@ -18,7 +18,7 @@ var fileLocks sync.Map
 
 func FsLoader(L *lua.LState) int {
 	mod := &Fs{
-		Module: util.NewModule(L, nil),
+		Module: util.NewModule(L),
 	}
 	methods := util.Methods{
 		"mkdir":     mod.mkdir,

@@ -14,44 +14,36 @@ type Module struct {
 }
 
 func NewModule(L *lua.LState, methods ...Methods) *Module {
-
-	L.SetTop(0)
-
 	mod := &Module{
 		Method: L.NewTable(),
 		Vm:     L,
 	}
-
-	if methods != nil {
-		return mod.SetMethods(methods...)
-	}
-
-	return mod
+	return mod.SetMethods(methods...)
 }
 
 func (m *Module) SetMethods(methods ...Methods) *Module {
-	ms := map[string]lua.LGFunction{}
+	if len(methods) == 0 {
+		return m
+	}
 	for i := 0; i < len(methods); i++ {
-		for name, method := range methods[i] {
-			switch v := method.(type) {
+		for key, val := range methods[i] {
+			switch v := val.(type) {
 			case lua.LGFunction:
-				ms[name] = v
+				m.Method.RawSetString(key, m.Vm.NewClosure(v))
 			case func(*lua.LState) int:
-				ms[name] = v
+				m.Method.RawSetString(key, m.Vm.NewClosure(v))
 			case lua.LValue:
-				m.Method.RawSetString(name, v)
+				m.Method.RawSetString(key, v)
 			default:
-				if lv := ToLuaValue(v); lv != lua.LNil {
-					m.Method.RawSetString(name, lv)
-				} else {
-					err := fmt.Errorf("unsupported method: `%s` type", name)
-					m.RaiseError(err)
+				lv := ToLuaValue(v)
+				m.Method.RawSetString(key, lv)
+				if lv == lua.LNil {
+					err := fmt.Errorf("unsupported method type: %s", key)
+					DebugPrintError(err)
 				}
 			}
 		}
 	}
-
-	m.Vm.SetFuncs(m.Method, ms)
 	return m
 }
 

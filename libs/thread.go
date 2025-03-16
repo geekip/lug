@@ -23,7 +23,7 @@ func ThreadLoader(L *lua.LState) int {
 
 func newThread(L *lua.LState) int {
 	mod := &Thread{
-		Module: util.NewModule(L, nil),
+		Module: util.NewModule(L),
 		wg:     &sync.WaitGroup{},
 	}
 	mod.SetMethods(util.Methods{

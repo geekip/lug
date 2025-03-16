@@ -17,7 +17,7 @@ var Utf8charpattern = lua.LString([]byte{
 
 func Uft8Loader(L *lua.LState) int {
 	mod := &Utf8{
-		Module: util.NewModule(L, nil),
+		Module: util.NewModule(L),
 	}
 
 	mod.SetMethods(util.Methods{

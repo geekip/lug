@@ -12,7 +12,7 @@ type Json struct{ *util.Module }
 
 func JsonLoader(L *lua.LState) int {
 	mod := &Json{
-		Module: util.NewModule(L, nil),
+		Module: util.NewModule(L),
 	}
 	mod.SetMethods(util.Methods{
 		"encode": mod.Encode,

@@ -11,7 +11,7 @@ type Url struct{ *util.Module }
 
 func UrlLoader(L *lua.LState) int {
 	mod := &Url{
-		Module: util.NewModule(L, nil),
+		Module: util.NewModule(L),
 	}
 	mod.SetMethods(util.Methods{
 		"queryEscape":   mod.QueryEscape,

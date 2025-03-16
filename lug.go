@@ -8,6 +8,7 @@ import (
 )
 
 func main() {
+	// util.SetMode("debug")
 	if err := cmd.Run(); err != nil {
 		log.Fatal(err)
 	}

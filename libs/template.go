@@ -22,7 +22,7 @@ var templateCache sync.Map
 
 func TemplateLoader(L *lua.LState) int {
 	mod := &Template{
-		Module: util.NewModule(L, nil),
+		Module: util.NewModule(L),
 	}
 	mod.SetMethods(util.Methods{
 		"file":   mod.executeFile,
