@@ -38,7 +38,6 @@ func executeDump(L *lua.LState, scriptPath string, dumpAST, dumpVM bool) error {
 		fmt.Println(proto.String())
 	}
 
-	lFunc := L.NewFunctionFromProto(proto)
-	L.Push(lFunc)
+	L.Push(L.NewFunctionFromProto(proto))
 	return L.PCall(0, lua.MultRet, nil)
 }

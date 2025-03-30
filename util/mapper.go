@@ -3,6 +3,7 @@ package util
 import (
 	"math"
 	"reflect"
+	"time"
 
 	lua "github.com/yuin/gopher-lua"
 )
@@ -15,6 +16,10 @@ func ToLuaValue(gv interface{}) lua.LValue {
 		return lua.LBool(v)
 	case string:
 		return lua.LString(v)
+	case time.Time:
+		return lua.LString(v.Format(time.RFC3339))
+	case []byte:
+		return lua.LString(string(v))
 	case float64:
 		return lua.LNumber(v)
 	case int:
@@ -139,6 +144,6 @@ func ToGoValue(lv lua.LValue, likeJson bool) interface{} {
 	case *lua.LUserData:
 		return v.Value
 	default:
-		return v
+		return v.String()
 	}
 }

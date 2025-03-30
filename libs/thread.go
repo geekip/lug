@@ -1,7 +1,6 @@
 package libs
 
 import (
-	"fmt"
 	"sync"
 
 	"lug/util"
@@ -44,9 +43,9 @@ func (m *Thread) run(L *lua.LState) int {
 		vm := util.VmPool.Get()
 		defer util.VmPool.Put(vm)
 
-		err := util.CallLua(vm, callback, nil)
-		if err != nil {
-			fmt.Println(err.Error())
+		vm.Push(callback)
+		if err := vm.PCall(0, 0, nil); err != nil {
+			util.DebugPrintError(err)
 			return
 		}
 	}()

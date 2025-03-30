@@ -22,42 +22,40 @@ import (
 )
 
 type (
-	Handler    func(*requestCtx)
-	requestCtx struct {
-		w    *ResponseWriter
-		r    *Request
-		done chan struct{}
-	}
-	Server struct {
+	Handler func(*Context)
+	Server  struct {
 		*util.Module
 		sync.Mutex
-		config      *serverConfig
 		prefix      string
 		methods     []string
 		node        *Node
 		middlewares []Handler
+		config      *serverConfig
 		httpServer  *http.Server
 		closed      atomic.Bool
-		wg          sync.WaitGroup
-		queue       chan *requestCtx
-		ctx         context.Context
+		ctx         *Context
+		ctxQueue    chan *Context
+		context     context.Context
 		cancel      context.CancelFunc
+		wg          sync.WaitGroup
 		once        sync.Once
-		requestPool sync.Pool
 	}
-
 	serverConfig struct {
-		CertFile          string
-		KeyFile           string
+		CertFile          string         // 证书文件
+		KeyFile           string         // 私钥文件
 		Addr              string         // 监听地址
+		errorTemplate     string         // 错误模板
+		Workers           int            // 工作协程
+		QueueSize         int            // 请求队列
 		ReadTimeout       time.Duration  // 读取超时
 		WriteTimeout      time.Duration  // 写入超时
 		IdleTimeout       time.Duration  // 空闲超时
-		QueueSize         int            // 请求队列容量
-		Workers           int            // 工作协程数
 		ProcessingTimeout time.Duration  // 处理超时
-		ShutdownTimeout   time.Duration  // 优雅关闭超时
-		Logger            *lua.LFunction // 日志记录器
+		ShutdownTimeout   time.Duration  // 关闭超时
+		onRequest         *lua.LFunction // 查询记录
+		onError           *lua.LFunction // 服务错误
+		onSuccess         *lua.LFunction // 服务成功
+		onShutdown        *lua.LFunction // 服务关闭
 	}
 )
 
@@ -77,38 +75,42 @@ func extendMethod(s *Server) util.Methods {
 	}
 }
 
-func newServer(L *lua.LState) *lua.LTable {
-	config := &serverConfig{
-		Addr:              ":8080",
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       30 * time.Second,
+func newServer(L *lua.LState) int {
+	cfg := &serverConfig{
+		Addr:              ":3000",
+		Workers:           100,
 		QueueSize:         1000,
-		Workers:           50,
-		ProcessingTimeout: 15 * time.Second,
-		ShutdownTimeout:   30 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		ProcessingTimeout: 30 * time.Second,
+		ShutdownTimeout:   60 * time.Second,
+	}
+
+	if L.GetTop() >= 1 {
+		opts := L.CheckTable(1)
+		cfg = getServerConfig(L, opts, cfg)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &Server{
-		Module:      util.NewModule(L),
-		node:        newNode(),
-		config:      config,
-		queue:       make(chan *requestCtx, config.QueueSize),
-		ctx:         ctx,
-		cancel:      cancel,
-		requestPool: sync.Pool{New: func() interface{} { return &requestCtx{} }},
+		Module:   util.NewModule(L),
+		node:     newNode(),
+		config:   cfg,
+		ctxQueue: make(chan *Context, cfg.QueueSize),
+		context:  ctx,
+		cancel:   cancel,
 	}
 
-	serverMethods := util.Methods{
-		"listen":   server.Listen,
-		"shutdown": server.Shutdown,
-		"group":    server.Group,
-		"config":   server.Config,
-	}
-	server.SetMethods(extendMethod(server), serverMethods)
+	methods := extendMethod(server)
+	server.SetMethods(methods, util.Methods{
+		"listen":      server.Listen,
+		"shutdown":    server.Shutdown,
+		"group":       server.Group,
+		"stripPrefix": server.StripPrefix,
+	})
 
-	return server.Method
+	return server.Self()
 }
 
 func (s *Server) Group(L *lua.LState) int {
@@ -131,7 +133,7 @@ func (s *Server) Use(L *lua.LState) int {
 	s.Lock()
 	defer s.Unlock()
 	for i := 1; i <= n; i++ {
-		handler := s.makeLuaHandler(L.CheckFunction(i))
+		handler := s.luaHttpHandler(L.CheckFunction(i), true)
 		s.middlewares = append(s.middlewares, handler)
 	}
 	return s.Self()
@@ -140,7 +142,7 @@ func (s *Server) Use(L *lua.LState) int {
 func (s *Server) handle(method string) lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := s.pathJoin(L.CheckString(1))
-		handler := s.makeLuaHandler(L.CheckFunction(2))
+		handler := s.luaHttpHandler(L.CheckFunction(2), false)
 
 		s.Lock()
 		s.methods = append(s.methods, method)
@@ -150,7 +152,9 @@ func (s *Server) handle(method string) lua.LGFunction {
 
 		for _, m := range methods {
 			mUpper := strings.ToUpper(m)
-			s.node.add(mUpper, path, handler, s.middlewares)
+			if err := s.node.add(mUpper, path, handler, s.middlewares); err != nil {
+				L.RaiseError(err.Error())
+			}
 		}
 
 		s.Lock()
@@ -160,14 +164,47 @@ func (s *Server) handle(method string) lua.LGFunction {
 	}
 }
 
-func (s *Server) makeLuaHandler(handler *lua.LFunction) Handler {
-	return func(ctx *requestCtx) {
+func (s *Server) StripPrefix(L *lua.LState) int {
+	prefix := L.CheckString(1)
+	fn := L.CheckFunction(2)
+
+	strippedLuaFn := L.NewClosure(func(L *lua.LState) int {
+		r := s.ctx.r.Request
+		path := r.URL.Path
+		if strings.HasPrefix(path, prefix) {
+			path = strings.TrimPrefix(path, prefix)
+			if path == "" {
+				path = "/"
+			}
+			r.SetPathValue("prefix", prefix)
+		}
+		r.SetPathValue("path", path)
+		s.luaHttpHandler(fn, false)(s.ctx)
+		return 0
+	})
+
+	L.Push(strippedLuaFn)
+	return 1
+}
+
+func (s *Server) luaHttpHandler(handler *lua.LFunction, hasNext bool) Handler {
+	return func(ctx *Context) {
 		s.Vm.SetTop(0) // 清空栈
 		s.Vm.Push(handler)
 		s.Vm.Push(ctx.w.getMethods(s.Vm))
 		s.Vm.Push(ctx.r.getMethods(s.Vm))
-		if err := s.Vm.PCall(2, 0, nil); err != nil {
-			s.respondError(ctx, err.Error(), http.StatusInternalServerError)
+
+		var err error
+		if hasNext {
+			s.Vm.Push(s.Vm.NewClosure(ctx.Next))
+			err = s.Vm.PCall(3, 0, nil)
+		} else {
+			err = s.Vm.PCall(2, 0, nil)
+		}
+
+		if err != nil {
+			s.logger("request", err.Error(), http.StatusInternalServerError)
+			s.respondError(http.StatusInternalServerError, err)
 		}
 	}
 }
@@ -176,6 +213,7 @@ func (s *Server) Listen(L *lua.LState) int {
 	s.config.Addr = L.CheckString(1)
 	if err := s.start(); err != nil {
 		L.Push(lua.LString(err.Error()))
+		s.logger("error", "%v", err.Error())
 		return 1
 	}
 	return 0
@@ -186,32 +224,31 @@ func (s *Server) Shutdown(L *lua.LState) int {
 	return 0
 }
 
-func (s *Server) logger(format string, v ...interface{}) {
-	if s.config.Logger != nil {
-		msg := fmt.Sprintf(format, v...)
-		if err := util.CallLua(s.Vm, s.config.Logger, msg); err != nil {
+func (s *Server) logger(t string, format string, v ...interface{}) {
+	msg := fmt.Sprintf(format, v...)
+	var callback *lua.LFunction
+
+	switch t {
+	case `error`:
+		callback = s.config.onError
+	case `success`:
+		callback = s.config.onSuccess
+	case `shutdown`:
+		callback = s.config.onShutdown
+	case `request`:
+		callback = s.config.onRequest
+	}
+	if callback != nil {
+		if err := util.CallLua(s.Vm, callback, lua.LString(msg)); err != nil {
 			s.Vm.RaiseError(err.Error())
 		}
 	} else {
-		log.Printf(format, v...)
+		log.Println(msg)
 	}
 }
 
-func (s *Server) respondError(ctx *requestCtx, message string, status int) {
-	http.Error(ctx.w.ResponseWriter, message, status)
-}
-
-func (s *Server) requestLog(ctx *requestCtx) {
-	if !ctx.w.hijacked {
-		log.Printf("%s %s %d %d", ctx.r.Request.Method, ctx.r.Request.URL.Path, ctx.w.status, ctx.w.size)
-	}
-}
-
-func (s *Server) releaseRequestCtx(ctx *requestCtx) {
-	close(ctx.done)
-	ctx.w = nil
-	ctx.r = nil
-	s.requestPool.Put(ctx)
+func (s *Server) respondError(statusCode int, err error) {
+	s.ctx.w.error(statusCode, err)
 }
 
 func (s *Server) start() error {
@@ -229,7 +266,8 @@ func (s *Server) start() error {
 			WriteTimeout: s.config.WriteTimeout,
 			IdleTimeout:  s.config.IdleTimeout,
 		}
-		s.logger("Server starting on %s", s.config.Addr)
+
+		s.logger("success", "Server starting on %s", s.config.Addr)
 
 		s.startWorkers()
 		go s.handleShutdown()
@@ -241,12 +279,13 @@ func (s *Server) start() error {
 
 func (s *Server) shutdown() {
 	s.cancel()
-	s.logger("server gracefully stopped")
+	s.logger("shutdown", "server gracefully stopped")
 }
 
 func (s *Server) runServer(listener net.Listener) {
+
 	if err := s.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		s.logger("Server error: %v", err)
+		s.logger("error", "Server error: %v", err)
 		s.cancel()
 	}
 }
@@ -257,27 +296,27 @@ func (s *Server) WaitForInterrupt() {
 	signal.Notify(sigChan, os.Interrupt)
 	select {
 	case sig := <-sigChan:
-		s.logger("Received signal: %v\n", sig)
-	case <-s.ctx.Done():
+		s.logger("shutdown", "Received signal: %v", sig)
+	case <-s.context.Done():
 	}
 	s.shutdown()
 }
 
 // 优雅关闭
 func (s *Server) handleShutdown() {
-	<-s.ctx.Done()
+	<-s.context.Done()
 	s.initiateShutdown()
 }
 
 func (s *Server) initiateShutdown() {
 	s.closed.Store(true)
-	close(s.queue)
+	close(s.ctxQueue)
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.config.ShutdownTimeout)
+	timectx, cancel := context.WithTimeout(context.Background(), s.config.ShutdownTimeout)
 	defer cancel()
 
-	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-		s.logger("Shutdown error: %v", err)
+	if err := s.httpServer.Shutdown(timectx); err != nil {
+		s.logger("error", "Shutdown error: %v", err)
 	}
 	s.wg.Wait()
 }
@@ -291,46 +330,49 @@ func (s *Server) startWorkers() {
 
 func (s *Server) worker() {
 	defer s.wg.Done()
-	for ctx := range s.queue {
+	for ctx := range s.ctxQueue {
 		s.processRequest(ctx)
 	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := s.requestPool.Get().(*requestCtx)
-	ctx.done = make(chan struct{})
-	ctx.w = NewResponse(w, r)
-	ctx.r = NewRequest(w, r)
+	s.ctx = newContext(w, r)
+	s.ctx.w.ErrorTemplate = s.config.errorTemplate
 
 	if s.closed.Load() {
-		s.respondError(ctx, "503 service Unavailable", http.StatusServiceUnavailable)
-		s.releaseRequestCtx(ctx)
+		s.respondError(http.StatusServiceUnavailable, errors.New("service Unavailable"))
+		s.ctx.release()
 		return
 	}
 
 	select {
-	case s.queue <- ctx:
-		<-ctx.done
+	case s.ctxQueue <- s.ctx:
+		<-s.ctx.Done
 	default:
-		s.respondError(ctx, "503 service Temporarily Unavailable", http.StatusServiceUnavailable)
-		s.releaseRequestCtx(ctx)
+		s.respondError(http.StatusServiceUnavailable, errors.New("service Temporarily Unavailable"))
+		s.ctx.release()
 	}
 }
 
+func (s *Server) requestLog(ctx *Context) {
+	// size := util.FormatBytes(int64(ctx.w.Size))
+	s.logger("request", "%s %d %s %d", ctx.r.Request.Method, ctx.w.StatusCode, ctx.r.Request.URL.Path, ctx.w.Size)
+}
+
 // 请求处理
-func (s *Server) processRequest(ctx *requestCtx) {
+func (s *Server) processRequest(ctx *Context) {
 	defer func() {
-		s.releaseRequestCtx(ctx)
+		ctx.release()
 	}()
 
 	defer func() {
 		if err := recover(); err != nil {
-			s.logger("panic recovered: %v", err)
-			s.respondError(ctx, "internal server error", http.StatusInternalServerError)
+			s.logger("error", "Panic recovered: %v", err)
+			s.respondError(http.StatusInternalServerError, errors.New("internal server error"))
 		}
 	}()
 
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), s.config.ProcessingTimeout)
+	timeoutctx, cancel := context.WithTimeout(context.Background(), s.config.ProcessingTimeout)
 	defer cancel()
 
 	done := make(chan struct{})
@@ -342,25 +384,30 @@ func (s *Server) processRequest(ctx *requestCtx) {
 	select {
 	case <-done:
 		s.requestLog(ctx)
-	case <-timeoutCtx.Done():
-		ctx.w.timedOut = true
-		s.respondError(ctx, "Request timeout", http.StatusGatewayTimeout)
+	case <-timeoutctx.Done():
+		ctx.w.TimedOut = true
+		s.logger("request", "request timeout")
+		s.respondError(http.StatusGatewayTimeout, errors.New("request timeout"))
 	}
 }
 
-func (s *Server) serve(ctx *requestCtx) {
+func (s *Server) serve(ctx *Context) {
 	node := s.node.find(ctx.r.Request.Method, ctx.r.Request.URL.Path)
-	if node != nil {
-		r := context.WithValue(ctx.r.Request.Context(), paramCtxKey, node.params)
-		ctx.r.Request = ctx.r.Request.WithContext(r)
-	}
 	if node == nil {
-		s.respondError(ctx, "404 page not found", http.StatusNotFound)
+		s.respondError(http.StatusNotFound, errors.New("page not found"))
 		return
 	}
+	if node.host != "" && node.host != ctx.r.Request.Host {
+		s.respondError(http.StatusForbidden, fmt.Errorf("host not allowed: requested '%s', allowed '%s'", ctx.r.Host, node.host))
+		return
+	}
+
+	ctx.w.Params = node.params
+	ctx.r.Params = node.params
+
 	handler := node.handler
 	if handler == nil {
-		s.respondError(ctx, "405 method not allowed", http.StatusMethodNotAllowed)
+		s.respondError(http.StatusMethodNotAllowed, errors.New("method not allowed"))
 		return
 	}
 	if len(node.middlewares) > 0 {
@@ -376,33 +423,34 @@ func (s *Server) withMiddleware(middlewares []Handler, handler Handler) Handler 
 	for i := count; i >= 0; i-- {
 		currentIndex := i
 		next := handler
-		handler = func(c *requestCtx) {
+		handler = func(ctx *Context) {
 			if currentIndex < count {
-				c.r.Next = func() { next(c) }
+				ctx.next = func() { next(ctx) }
 			} else {
-				c.r.Next = nil
+				ctx.next = nil
 			}
-			middlewares[currentIndex](c)
+			middlewares[currentIndex](ctx)
 		}
 	}
 	return handler
 }
 
 func (s *Server) getListener(addr string) (net.Listener, error) {
-	var listener net.Listener
-	var err error
-
 	if s.config.CertFile == "" || s.config.KeyFile == "" {
-		listener, err = net.Listen("tcp", addr)
-	} else {
-		if cert, e := tls.LoadX509KeyPair(s.config.CertFile, s.config.KeyFile); e == nil {
-			listener, err = tls.Listen("tcp", addr, &tls.Config{
-				Certificates: []tls.Certificate{cert},
-				MinVersion:   tls.VersionTLS12,
-			})
-		}
+		return net.Listen("tcp", addr)
 	}
-	return listener, err
+
+	cert, err := tls.LoadX509KeyPair(s.config.CertFile, s.config.KeyFile)
+	if err != nil {
+		return nil, err
+	}
+
+	config := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	return tls.Listen("tcp", addr, config)
 }
 
 func (s *Server) pathJoin(pattern string) string {
@@ -416,79 +464,103 @@ func (s *Server) pathJoin(pattern string) string {
 	return finalPath
 }
 
-func (s *Server) Config(L *lua.LState) int {
-	L.CheckTable(1).ForEach(func(k lua.LValue, v lua.LValue) {
+func getServerConfig(L *lua.LState, opts *lua.LTable, cfg *serverConfig) *serverConfig {
+	opts.ForEach(func(k lua.LValue, v lua.LValue) {
+		key := k.String()
+		switch key {
 
-		if k.String() == `certFile` {
+		case "certFile":
 			if val, ok := v.(lua.LString); ok {
-				s.config.CertFile = val.String()
+				cfg.CertFile = val.String()
 			} else {
 				L.ArgError(1, "certFile must be string")
 			}
-		}
-		if k.String() == `keyFile` {
+
+		case "keyFile":
 			if val, ok := v.(lua.LString); ok {
-				s.config.KeyFile = val.String()
+				cfg.KeyFile = val.String()
 			} else {
-				L.ArgError(1, "keyFile must be number")
+				L.ArgError(1, "keyFile must be string")
 			}
-		}
-		if k.String() == `readTimeout` {
+
+		case "readTimeout":
 			if val, ok := v.(lua.LNumber); ok {
-				s.config.ReadTimeout = time.Duration(int(val)) * time.Second
+				cfg.ReadTimeout = time.Duration(int(val)) * time.Second
 			} else {
 				L.ArgError(1, "readTimeout must be number(time second)")
 			}
-		}
-		if k.String() == `writeTimeout` {
+
+		case "writeTimeout":
 			if val, ok := v.(lua.LNumber); ok {
-				s.config.WriteTimeout = time.Duration(int(val)) * time.Second
+				cfg.WriteTimeout = time.Duration(int(val)) * time.Second
 			} else {
 				L.ArgError(1, "writeTimeout must be number(time second)")
 			}
-		}
-		if k.String() == `idleTimeout` {
+
+		case "idleTimeout":
 			if val, ok := v.(lua.LNumber); ok {
-				s.config.IdleTimeout = time.Duration(int(val)) * time.Second
+				cfg.IdleTimeout = time.Duration(int(val)) * time.Second
 			} else {
 				L.ArgError(1, "idleTimeout must be number(time second)")
 			}
-		}
-		if k.String() == `processingTimeout` {
+
+		case "processingTimeout":
 			if val, ok := v.(lua.LNumber); ok {
-				s.config.ProcessingTimeout = time.Duration(int(val)) * time.Second
+				cfg.ProcessingTimeout = time.Duration(int(val)) * time.Second
 			} else {
 				L.ArgError(1, "processingTimeout must be number(time second)")
 			}
-		}
-		if k.String() == `shutdownTimeout` {
+
+		case "queueSize":
 			if val, ok := v.(lua.LNumber); ok {
-				s.config.ShutdownTimeout = time.Duration(int(val)) * time.Second
-			} else {
-				L.ArgError(1, "shutdownTimeout must be number(time second)")
-			}
-		}
-		if k.String() == `queueSize` {
-			if val, ok := v.(lua.LNumber); ok {
-				s.config.QueueSize = int(val)
+				cfg.QueueSize = int(val)
 			} else {
 				L.ArgError(1, "queueSize must be number")
 			}
-		}
-		if k.String() == `workers` {
+
+		case "workers":
 			if val, ok := v.(lua.LNumber); ok {
-				s.config.Workers = int(val)
+				cfg.Workers = int(val)
 			} else {
 				L.ArgError(1, "workers must be number")
 			}
-		}
-		if k.String() == `logger` {
+
+		case "onRequest":
 			if val, ok := v.(*lua.LFunction); ok {
-				s.config.Logger = val
+				cfg.onRequest = val
+			} else {
+				L.ArgError(1, "onRequest must be function")
+			}
+		case "onError":
+			if val, ok := v.(*lua.LFunction); ok {
+				cfg.onError = val
 			} else {
 				L.ArgError(1, "onError must be function")
 			}
+
+		case "onSuccess":
+			if val, ok := v.(*lua.LFunction); ok {
+				cfg.onSuccess = val
+			} else {
+				L.ArgError(1, "onSuccess must be function")
+			}
+
+		case "onShutdown":
+			if val, ok := v.(*lua.LFunction); ok {
+				cfg.onShutdown = val
+			} else {
+				L.ArgError(1, "onShutdown must be function")
+			}
+
+		case "errorTemplate":
+			if val, ok := v.(lua.LString); ok {
+				cfg.errorTemplate = val.String()
+			} else {
+				L.ArgError(1, "errorTemplate must be string")
+			}
+
 		}
+
 	})
-	return s.Self()
+	return cfg
 }

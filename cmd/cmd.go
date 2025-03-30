@@ -7,7 +7,7 @@ import (
 	"runtime/pprof"
 
 	"lug/libs"
-	pkg "lug/package"
+	"lug/pkg"
 	"lug/util"
 )
 

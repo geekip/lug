@@ -17,10 +17,8 @@ type Fs struct{ *util.Module }
 var fileLocks sync.Map
 
 func FsLoader(L *lua.LState) int {
-	mod := &Fs{
-		Module: util.NewModule(L),
-	}
-	methods := util.Methods{
+	mod := &Fs{Module: util.NewModule(L)}
+	mod.SetMethods(util.Methods{
 		"mkdir":     mod.mkdir,
 		"copy":      mod.copyFile,
 		"chmod":     mod.chmod,
@@ -43,8 +41,8 @@ func FsLoader(L *lua.LState) int {
 		"isabs":     mod.isabs,
 		"fromSlash": mod.fromSlash,
 		"toSlash":   mod.toSlash,
-	}
-	return mod.SetMethods(methods).Self()
+	})
+	return mod.Self()
 }
 
 func (f *Fs) mkdir(L *lua.LState) int {

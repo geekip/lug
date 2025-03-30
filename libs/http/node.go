@@ -18,9 +18,11 @@ type Node struct {
 	params      *lua.LTable
 	paramName   string
 	paramNode   *Node
+	host        string
 	regex       *regexp.Regexp
-	mutex       sync.Mutex
+	mu          sync.Mutex
 	isEnd       bool
+	isWild      bool
 }
 
 var regexCache sync.Map
@@ -50,53 +52,37 @@ func (n *Node) add(method, pattern string, handler Handler, middlewares []Handle
 	if method == "" || pattern == "" || handler == nil {
 		return errors.New("http server Handle error")
 	}
-	n.mutex.Lock()
-	defer n.mutex.Unlock()
+	n.mu.Lock()
+	defer n.mu.Unlock()
 
-	// if existing, ok := n.methods[method]; ok && existing != nil {
-	// 	return nil, fmt.Errorf("duplicate route for method %s and pattern %s", method, pattern)
-	// }
+	pat, err := parsePattern(pattern)
+	if err != nil {
+		return fmt.Errorf("parsing %q: %w", pattern, err)
+	}
 
-	segments := strings.Split(pattern, `/`)
-	lastIndex := len(segments) - 1
-
-	for i, segment := range segments {
-		if segment == "" {
-			continue
-		}
-
-		// Handle parameter segments wrapped in {}
-		if strings.HasPrefix(segment, `{`) && strings.HasSuffix(segment, `}`) {
-			param := segment[1 : len(segment)-1]
-			parts := strings.SplitN(param, `:`, 2)
-			paramName := parts[0]
-
-			// Validate wildcard position (must be last segment)
-			if strings.HasPrefix(paramName, `*`) {
-				if i != lastIndex {
-					return fmt.Errorf("router wildcard %s must be the last segment", segment)
-				}
-			}
-			// Create parameter node if not exists
+	for _, segment := range pat.segments {
+		if segment.param {
 			if n.paramNode == nil {
-				n.paramNode = newNode()
-				n.paramNode.paramName = paramName
-				if len(parts) > 1 {
-					n.paramNode.regex = makeRegexp(parts[1])
+				pn := newNode()
+				pn.paramName = segment.name
+				pn.isWild = segment.wild
+				if segment.regexp != "" {
+					pn.regex = makeRegexp(segment.regexp)
 				}
+				n.paramNode = pn
 			}
 			n = n.paramNode
 		} else {
-			// Add static path segment to routing tree
-			child, exists := n.children[segment]
+			child, exists := n.children[segment.name]
 			if !exists {
 				child = newNode()
-				n.children[segment] = child
+				n.children[segment.name] = child
 			}
 			n = child
 		}
 	}
 
+	n.host = pat.host
 	n.isEnd = true
 	n.methods[method] = handler
 	n.middlewares = append(n.middlewares, middlewares...)
@@ -106,42 +92,41 @@ func (n *Node) add(method, pattern string, handler Handler, middlewares []Handle
 // find traverses the routing tree to match URL segments and collect parameters
 // Returns matched node or nil if no match found
 func (n *Node) find(method, url string) *Node {
-
-	params := &lua.LTable{}
+	params := n.params
 	segments := strings.Split(url, `/`)
+
 	for i, segment := range segments {
-		if segment == "" {
+
+		if segment == "" && (n.paramNode == nil || !n.paramNode.isWild) {
 			continue
 		}
 
-		// Try static path match first
+		// static path
 		if child := n.children[segment]; child != nil {
 			n = child
+			if wild := n.findWild(params, segments, i); wild != nil {
+				n = wild
+				break
+			}
 			continue
 		}
 
-		// Fallback to parameter matching
-		if n.paramNode != nil {
-			paramNode := n.paramNode
-			paramName := paramNode.paramName
-
-			// Validate against regex constraint if present
-			if paramNode.regex != nil && !paramNode.regex.MatchString(segment) {
+		// param path
+		if pn := n.paramNode; pn != nil {
+			n = pn
+			if n.regex != nil && !n.regex.MatchString(segment) {
 				return nil
 			}
 
-			n = paramNode
+			params.RawSetString(n.paramName, lua.LString(segment))
 
-			// Handle wildcard parameter (capture remaining path segments)
-			if strings.HasPrefix(paramName, `*`) {
-				val := lua.LString(strings.Join(segments[i:], `/`))
-				params.RawSetString(paramName, val)
+			if wild := n.findWild(params, segments, i); wild != nil {
+				n = wild
 				break
 			}
-
-			params.RawSetString(paramName, lua.LString(segment))
 			continue
 		}
+
 		return nil
 	}
 
@@ -151,10 +136,29 @@ func (n *Node) find(method, url string) *Node {
 		if handler == nil {
 			handler = n.methods[`*`]
 		}
-
 		n.params = params
 		n.handler = handler
 		return n
 	}
+	return nil
+}
+
+func (n *Node) findWild(params *lua.LTable, segments []string, index int) *Node {
+	nextIndex := index + 1
+
+	if !n.isWild {
+		n = n.paramNode
+	}
+
+	if n != nil && n.isWild {
+		if nextIndex == len(segments) {
+			return nil
+		}
+		n.isEnd = true
+		param := strings.Join(segments[nextIndex:], `/`)
+		params.RawSetString(n.paramName, lua.LString(param))
+		return n
+	}
+
 	return nil
 }

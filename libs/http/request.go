@@ -2,157 +2,161 @@ package http
 
 import (
 	"io"
-	"lug/util"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
+
+	"lug/util"
 
 	lua "github.com/yuin/gopher-lua"
 )
 
 type Request struct {
-	http.ResponseWriter
-	*http.Request
-	method     lua.LString
-	host       lua.LString
-	proto      lua.LString
-	path       lua.LString
-	referer    lua.LString
-	userAgent  lua.LString
-	rawPath    lua.LString
-	rawQuery   lua.LString
-	requestUri lua.LString
-	remoteAddr lua.LString
-	params     *lua.LTable
-	query      *lua.LTable
-	headers    *lua.LTable
+	Request    *http.Request
+	Method     lua.LString
+	Scheme     lua.LString
+	Host       lua.LString
+	Proto      lua.LString
+	Path       lua.LString
+	Referer    lua.LString
+	UserAgent  lua.LString
+	RawPath    lua.LString
+	RawQuery   lua.LString
+	RequestUri lua.LString
+	RemoteAddr lua.LString
+	Params     *lua.LTable
 	Data       *lua.LTable
-	mu         sync.RWMutex
-	Next       func()
+	StatusCode int
+	StatusText string
+	Size       int
+	body       []byte
+	bodyErr    error
 }
 
-type ctxKey int
-
-var paramCtxKey ctxKey = 0
-
-// var requestPools = sync.Pool{
-// 	New: func() interface{} {
-// 		return &Request{
-// 			params:  &lua.LTable{},
-// 			query:   &lua.LTable{},
-// 			headers: &lua.LTable{},
-// 			Data:    &lua.LTable{},
-// 		}
-// 	},
-// }
-
-// NewRequest return lua table with http.Request representation
-func NewRequest(w http.ResponseWriter, r *http.Request) *Request {
-	request := &Request{
-		ResponseWriter: w,
-		Request:        r,
-		method:         lua.LString(r.Method),
-		host:           lua.LString(r.Host),
-		proto:          lua.LString(r.Proto),
-		path:           lua.LString(r.URL.Path),
-		referer:        lua.LString(r.Referer()),
-		userAgent:      lua.LString(r.UserAgent()),
-		rawPath:        lua.LString(r.URL.RawPath),
-		rawQuery:       lua.LString(r.URL.RawQuery),
-		requestUri:     lua.LString(r.RequestURI),
-		remoteAddr:     lua.LString(r.RemoteAddr),
-		params:         &lua.LTable{},
-		query:          &lua.LTable{},
-		headers:        &lua.LTable{},
-		Data:           &lua.LTable{},
-	}
-
-	if val := r.Context().Value(paramCtxKey); val != nil {
-		request.params = val.(*lua.LTable)
-	}
-
-	if r.URL != nil && len(r.URL.Query()) > 0 {
-		for k, v := range r.URL.Query() {
-			if len(v) > 0 {
-				request.query.RawSetString(k, lua.LString(v[0]))
-			}
-		}
-	}
-
-	if len(r.Header) > 0 {
-		for k, v := range r.Header {
-			if len(v) > 0 {
-				request.headers.RawSetString(k, lua.LString(v[0]))
-			}
-		}
-	}
-
-	return request
+var requestPool = sync.Pool{
+	New: func() interface{} { return &Request{} },
 }
 
-func (r *Request) getMethods(L *lua.LState) *lua.LTable {
-	mod := util.NewModule(L, util.Methods{
-		"params":      r.params,
-		"method":      r.method,
-		"host":        r.host,
-		"proto":       r.proto,
-		"path":        r.path,
-		"referer":     r.referer,
-		"userAgent":   r.userAgent,
-		"rawPath":     r.rawPath,
-		"rawQuery":    r.rawQuery,
-		"requestUri":  r.requestUri,
-		"remoteAddr":  r.remoteAddr,
-		"query":       r.query,
-		"headers":     r.headers,
-		"getQuery":    r.getQuery,
-		"getHeader":   r.getHeader,
-		"getCookie":   r.getCookie,
-		"getBody":     r.getBody,
-		"getClientIp": r.getClientIp,
-		"basicAuth":   r.basicAuth,
-		"postForm":    r.postForm,
-		"getData":     r.getData,
-		"setData":     r.setData,
-		"next":        r.next,
-		"error":       r.error,
+func newRequest(r *http.Request) *Request {
+	req := requestPool.Get().(*Request)
+	req.Request = r
+	req.Method = lua.LString(r.Method)
+	req.Scheme = lua.LString(req.getScheme())
+	req.Host = lua.LString(r.Host)
+	req.Proto = lua.LString(r.Proto)
+	req.Path = lua.LString(r.URL.Path)
+	req.Referer = lua.LString(r.Referer())
+	req.UserAgent = lua.LString(r.UserAgent())
+	req.RawPath = lua.LString(r.URL.RawPath)
+	req.RawQuery = lua.LString(r.URL.RawQuery)
+	req.RequestUri = lua.LString(r.RequestURI)
+	req.RemoteAddr = lua.LString(r.RemoteAddr)
+	req.Params = &lua.LTable{}
+	req.Data = &lua.LTable{}
+	req.StatusCode = http.StatusOK
+	req.StatusText = http.StatusText(http.StatusOK)
+	req.Size = 0
+	req.body = nil
+	req.bodyErr = nil
+	return req
+}
+
+func (req *Request) release() {
+	req.Request = nil
+	req.Method = ""
+	req.Scheme = ""
+	req.Host = ""
+	req.Proto = ""
+	req.Path = ""
+	req.Referer = ""
+	req.UserAgent = ""
+	req.RawPath = ""
+	req.RawQuery = ""
+	req.RequestUri = ""
+	req.RemoteAddr = ""
+	req.Params = nil
+	req.Data = nil
+	req.StatusCode = 0
+	req.StatusText = ""
+	req.Size = 0
+	req.body = nil
+	req.bodyErr = nil
+	requestPool.Put(req)
+}
+
+func (req *Request) getMethods(L *lua.LState) *lua.LTable {
+	methods := util.NewModule(L, util.Methods{
+		"params":       req.Params,
+		"method":       req.Method,
+		"scheme":       req.Scheme,
+		"host":         req.Host,
+		"proto":        req.Proto,
+		"path":         req.Path,
+		"referer":      req.Referer,
+		"userAgent":    req.UserAgent,
+		"rawPath":      req.RawPath,
+		"rawQuery":     req.RawQuery,
+		"requestUri":   req.RequestUri,
+		"remoteAddr":   req.RemoteAddr,
+		"getQuery":     req.GetQuery,
+		"getHeader":    req.GetHeader,
+		"getPath":      req.GetPath,
+		"getCookie":    req.GetCookie,
+		"getBody":      req.GetBody,
+		"getClientIp":  req.GetClientIp,
+		"basicAuth":    req.BasicAuth,
+		"postForm":     req.PostForm,
+		"getData":      req.Get,
+		"setData":      req.Set,
+		"getPathValue": req.GetPathValue,
+		"setPathValue": req.SetPathValue,
 	})
-	return mod.Method
+	return methods.Method
 }
 
-func (r *Request) next(L *lua.LState) int {
-	if r.Next != nil {
-		r.Next()
-	}
+func (req *Request) GetHeader(L *lua.LState) int {
+	key := L.CheckString(1)
+	L.Push(lua.LString(req.Request.Header.Get(key)))
+	return 1
+}
+
+func (req *Request) GetPath(L *lua.LState) int {
+	L.Push(lua.LString(req.Request.URL.Path))
+	return 1
+}
+
+func (req *Request) GetPathValue(L *lua.LState) int {
+	key := L.CheckString(1)
+	L.Push(lua.LString(req.Request.PathValue(key)))
+	return 1
+}
+
+func (req *Request) SetPathValue(L *lua.LState) int {
+	key, val := L.CheckString(1), L.CheckString(2)
+	req.Request.SetPathValue(key, val)
 	return 0
 }
 
-func (r *Request) getHeader(L *lua.LState) int {
+func (ctx *Request) GetQuery(L *lua.LState) int {
 	key := L.CheckString(1)
-	L.Push(lua.LString(r.Request.Header.Get(key)))
+	L.Push(lua.LString(ctx.Request.URL.Query().Get(key)))
 	return 1
 }
 
-func (r *Request) getQuery(L *lua.LState) int {
-	key := L.CheckString(1)
-	L.Push(lua.LString(r.Request.URL.Query().Get(key)))
-	return 1
-}
-
-func (r *Request) getBody(L *lua.LState) int {
-	data, err := io.ReadAll(r.Request.Body)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
+func (req *Request) GetBody(L *lua.LState) int {
+	if req.body == nil && req.bodyErr == nil {
+		req.body, req.bodyErr = io.ReadAll(req.Request.Body)
 	}
-	L.Push(lua.LString(string(data)))
-	return 1
+	if req.bodyErr != nil {
+		return util.NilError(L, req.bodyErr)
+	}
+	return util.Push(L, lua.LString(req.body))
 }
 
-func (r *Request) basicAuth(L *lua.LState) int {
+func (req *Request) BasicAuth(L *lua.LState) int {
 	u, p := L.CheckString(1), L.CheckString(2)
-	if user, pass, ok := r.Request.BasicAuth(); !ok || user != u || pass != p {
+	if user, pass, ok := req.Request.BasicAuth(); !ok || user != u || pass != p {
 		L.Push(lua.LFalse)
 	} else {
 		L.Push(lua.LTrue)
@@ -160,14 +164,12 @@ func (r *Request) basicAuth(L *lua.LState) int {
 	return 1
 }
 
-func (r *Request) postForm(L *lua.LState) int {
-	if err := r.Request.ParseForm(); err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
+func (req *Request) PostForm(L *lua.LState) int {
+	if err := req.Request.ParseForm(); err != nil {
+		return util.NilError(L, err)
 	}
 	lform := L.NewTable()
-	for key, values := range r.Request.PostForm {
+	for key, values := range req.Request.PostForm {
 		if len(values) > 0 {
 			lform.RawSetString(key, lua.LString(values[0]))
 		}
@@ -176,30 +178,31 @@ func (r *Request) postForm(L *lua.LState) int {
 	return 1
 }
 
-func (r *Request) getClientIp(L *lua.LState) int {
+func (req *Request) GetClientIp(L *lua.LState) int {
 	var cip string
-	if ip := r.Request.Header.Get("X-Forwarded-For"); ip != "" {
-		ips := strings.Split(ip, ",")
-		if len(ips) > 0 {
-			ip = strings.TrimSpace(ips[0])
+	if ip := req.Request.Header.Get("X-Forwarded-For"); ip != "" {
+		if ips := strings.Split(ip, ","); len(ips) > 0 {
+			cip = strings.TrimSpace(ips[0])
 		}
-		cip = ip
-	} else if ip := r.Request.Header.Get("X-Real-IP"); ip != "" {
+	} else if ip := req.Request.Header.Get("X-Real-IP"); ip != "" {
 		cip = ip
 	} else {
-		cip = strings.Split(r.Request.RemoteAddr, ":")[0]
+		host, _, err := net.SplitHostPort(req.Request.RemoteAddr)
+		if err == nil {
+			cip = host
+		} else {
+			cip = req.Request.RemoteAddr
+		}
 	}
 	L.Push(lua.LString(cip))
 	return 1
 }
 
-func (r *Request) getCookie(L *lua.LState) int {
+func (req *Request) GetCookie(L *lua.LState) int {
 	key := L.CheckString(1)
-	cookie, err := r.Request.Cookie(key)
+	cookie, err := req.Request.Cookie(key)
 	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
+		return util.NilError(L, err)
 	}
 	unparsedTable := L.NewTable()
 	for _, u := range cookie.Unparsed {
@@ -226,64 +229,39 @@ func (r *Request) getCookie(L *lua.LState) int {
 	return 1
 }
 
-func (r *Request) setData(L *lua.LState) int {
+func (req *Request) Set(L *lua.LState) int {
 	key, val := L.CheckString(1), L.CheckAny(2)
-
 	if strings.TrimSpace(key) == "" {
 		L.ArgError(1, "key cannot be empty")
-		return 0
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.Data.RawSetString(key, val)
+	req.Data.RawSetString(key, val)
 	return 0
 }
 
-func (r *Request) getData(L *lua.LState) int {
-
+func (req *Request) Get(L *lua.LState) int {
 	key := L.CheckString(1)
 	if strings.TrimSpace(key) == "" {
 		L.ArgError(1, "key cannot be empty")
-		return 0
 	}
-
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	value := r.Data.RawGetString(key)
-	L.Push(value)
+	L.Push(req.Data.RawGetString(key))
 	return 1
 }
 
-func (r *Request) Error(err string, code int) {
-	if !util.CheckStatusCode(code) {
-		code = http.StatusInternalServerError
+func (req *Request) getScheme() string {
+	// Can't use `r.Request.URL.Scheme`
+	// See: https://groups.google.com/forum/#!topic/golang-nuts/pMUkBlQBDF0
+	header := req.Request.Header
+	if scheme := header.Get("X-Forwarded-Proto"); scheme != "" {
+		return scheme
 	}
-
-	w := r.ResponseWriter
-	if w.Header().Get("Content-Type") == "" {
-		w.Header().Set("Content-Type", "text/html;charset=utf-8")
+	if scheme := header.Get("X-Forwarded-Protocol"); scheme != "" {
+		return scheme
 	}
-
-	w.WriteHeader(code)
-	if _, e := w.Write([]byte(err)); e != nil {
-		http.Error(w, err, code)
+	if ssl := header.Get("X-Forwarded-Ssl"); ssl == "on" {
+		return "https"
 	}
-}
-
-func (r *Request) error(L *lua.LState) int {
-	topLen := L.GetTop()
-	statusCode := http.StatusInternalServerError
-	statusText := http.StatusText(statusCode)
-
-	if topLen >= 1 {
-		statusText = L.CheckString(1)
-		if topLen >= 2 {
-			statusCode = L.CheckInt(2)
-		}
+	if scheme := header.Get("X-Url-Scheme"); scheme != "" {
+		return scheme
 	}
-	r.Error(statusText, statusCode)
-	return 0
+	return "http"
 }

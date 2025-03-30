@@ -6,12 +6,13 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type Methods map[string]interface{}
-
-type Module struct {
-	Method *lua.LTable
-	Vm     *lua.LState
-}
+type (
+	Methods map[string]interface{}
+	Module  struct {
+		Method *lua.LTable
+		Vm     *lua.LState
+	}
+)
 
 func NewModule(L *lua.LState, methods ...Methods) *Module {
 	mod := &Module{
@@ -25,33 +26,8 @@ func (m *Module) SetMethods(methods ...Methods) *Module {
 	if len(methods) == 0 {
 		return m
 	}
-	for i := 0; i < len(methods); i++ {
-		for key, val := range methods[i] {
-			switch v := val.(type) {
-			case lua.LGFunction:
-				m.Method.RawSetString(key, m.Vm.NewClosure(v))
-			case func(*lua.LState) int:
-				m.Method.RawSetString(key, m.Vm.NewClosure(v))
-			case lua.LValue:
-				m.Method.RawSetString(key, v)
-			default:
-				lv := ToLuaValue(v)
-				m.Method.RawSetString(key, lv)
-				if lv == lua.LNil {
-					err := fmt.Errorf("unsupported method type: %s", key)
-					DebugPrintError(err)
-				}
-			}
-		}
-	}
+	m.Method = SetMethods(m.Vm, m.Method, methods...)
 	return m
-}
-
-func (m *Module) CallLua(callback *lua.LFunction, args ...lua.LValue) error {
-	m.Vm.SetTop(0)
-	m.Push(callback)
-	alen := m.Push(args...)
-	return m.Vm.PCall(alen, 1, nil)
 }
 
 func (m *Module) Self(args ...lua.LValue) int {

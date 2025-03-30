@@ -1,4 +1,4 @@
-package db
+package sql
 
 import (
 	"database/sql"
@@ -12,19 +12,10 @@ import (
 
 // SQL represents a database connection wrapper.
 type SQL struct {
-	sql    *sql.DB
-	config dbConfig
-	refs   int
-	locker sync.Mutex
-}
-
-// dbConfig holds database configuration options.
-type dbConfig struct {
-	sharedMode   bool
-	maxOpenConns int
-	maxIdleConns int
-	dsn          string
-	driver       string
+	instance *sql.DB
+	config   dbConfig
+	refs     int
+	locker   sync.Mutex
 }
 
 var (
@@ -35,6 +26,10 @@ var (
 // NewSQL creates a new SQL instance with the given configuration.
 func NewSQL(config dbConfig) (*SQL, error) {
 
+	if config.driver == "sqlite" {
+		config.driver = "sqlite3"
+	}
+
 	if !isDriverSupported(config.driver) {
 		return nil, fmt.Errorf("unsupported driver: %s", config.driver)
 	}
@@ -42,7 +37,7 @@ func NewSQL(config dbConfig) (*SQL, error) {
 	sharedLocker.Lock()
 	defer sharedLocker.Unlock()
 
-	if config.sharedMode {
+	if config.shared {
 		if existing, ok := shared[config.dsn]; ok {
 			existing.refs++
 			return existing, nil
@@ -66,8 +61,8 @@ func NewSQL(config dbConfig) (*SQL, error) {
 		db.SetMaxIdleConns(config.maxIdleConns)
 	}
 
-	sqlInstance := &SQL{sql: db, config: config, refs: 1}
-	if config.sharedMode {
+	sqlInstance := &SQL{instance: db, config: config, refs: 1}
+	if config.shared {
 		shared[config.dsn] = sqlInstance
 	}
 	return sqlInstance, nil
@@ -88,7 +83,7 @@ func (s *SQL) close() error {
 	s.locker.Lock()
 	defer s.locker.Unlock()
 
-	if s.config.sharedMode {
+	if s.config.shared {
 		sharedLocker.Lock()
 		defer sharedLocker.Unlock()
 
@@ -98,5 +93,5 @@ func (s *SQL) close() error {
 		}
 		delete(shared, s.config.dsn)
 	}
-	return s.sql.Close()
+	return s.instance.Close()
 }

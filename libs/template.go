@@ -2,67 +2,77 @@ package libs
 
 import (
 	"bytes"
-	"sync"
-	"text/template"
-
 	"lug/util"
+	"text/template"
 
 	lua "github.com/yuin/gopher-lua"
 )
 
 type Template struct{ *util.Module }
 
-type templateEntry struct {
-	once sync.Once
-	tmpl *template.Template
-	err  error
-}
-
-var templateCache sync.Map
-
 func TemplateLoader(L *lua.LState) int {
 	mod := &Template{
 		Module: util.NewModule(L),
 	}
 	mod.SetMethods(util.Methods{
-		"file":   mod.executeFile,
+		"files":  mod.executeFiles,
 		"string": mod.executeString,
 	})
 	return mod.Self()
 }
 
-func (t *Template) executeFile(L *lua.LState) int {
-	path := L.CheckString(1)
+func (t *Template) executeFiles(L *lua.LState) int {
+	var tpl *template.Template
+	var err error
 
-	entryInterface, _ := templateCache.LoadOrStore(path, &templateEntry{})
-	entry := entryInterface.(*templateEntry)
+	switch lpath := L.CheckAny(1).(type) {
+	case lua.LString:
+		tpl, err = util.ParseTemplateFiles(lpath.String())
 
-	entry.once.Do(func() {
-		entry.tmpl, entry.err = template.ParseFiles(path)
-	})
+	case *lua.LTable:
+		paths := make([]string, lpath.Len())
+		lpath.ForEach(func(lk, lv lua.LValue) {
+			key, ok := lk.(lua.LNumber)
+			if !ok {
+				L.ArgError(1, "paths table must be a array table")
+			}
+			if str, ok := lv.(lua.LString); ok {
+				paths[int(key)-1] = str.String()
+			} else {
+				L.ArgError(1, "paths table contains non-string value")
+			}
+		})
+		tpl, err = util.ParseTemplateFiles(paths...)
 
-	if entry.err != nil {
-		return t.NilError(entry.err)
+	default:
+		L.ArgError(1, "paths must be a string or array table")
 	}
-	return t.executeTemplate(entry.tmpl)
-}
 
-func (t *Template) executeString(L *lua.LState) int {
-	tmplStr := L.CheckString(1)
-	tmpl, err := template.New("T").Parse(tmplStr)
 	if err != nil {
 		return t.NilError(err)
 	}
-	return t.executeTemplate(tmpl)
+	return t.executeTemplate(tpl)
 }
 
-func (t *Template) executeTemplate(tmpl *template.Template) int {
+func (t *Template) executeString(L *lua.LState) int {
+	str := L.CheckString(1)
+	key := L.OptString(3, "")
+	tpl, err := util.ParseTemplateString(str, key)
+	if err != nil {
+		return t.NilError(err)
+	}
+	return t.executeTemplate(tpl)
+}
+
+func (t *Template) executeTemplate(tpl *template.Template) int {
 	var data interface{}
 	if t.Vm.GetTop() >= 2 {
 		data = util.ToGoValue(t.Vm.CheckTable(2), false)
 	}
+
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := tpl.Execute(&buf, data); err != nil {
+		buf.Reset()
 		return t.NilError(err)
 	}
 	return t.Push(lua.LString(buf.String()))
