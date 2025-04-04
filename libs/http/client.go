@@ -184,76 +184,55 @@ func (c *client) response(req *http.Request, cfg clientConfig) (*clientResponse,
 func updateClientConfig(L *lua.LState, opts *lua.LTable, cfg *clientConfig) {
 
 	opts.ForEach(func(k lua.LValue, v lua.LValue) {
-		switch k.String() {
+		key := k.String()
+		switch key {
 
 		case `userAgent`:
-			if value, ok := v.(lua.LString); ok {
-				cfg.userAgent = value.String()
-			} else {
-				L.ArgError(1, "userAgent must be string")
+			if val, ok := util.ArgLString(L, key, v); ok {
+				cfg.userAgent = val
 			}
 
 		case `headers`:
-			if value, ok := v.(*lua.LTable); ok {
-				value.ForEach(func(key, val lua.LValue) {
-					cfg.headers.Add(key.String(), val.String())
-				})
-			} else {
-				L.ArgError(1, "headers must be table")
+			if val, ok := util.ArgLTableMap(L, key, v); ok {
+				for name, value := range val {
+					cfg.headers.Add(name, value)
+				}
 			}
 
 		case `basicAuth`:
-			if value, ok := v.(*lua.LTable); ok {
-				value.ForEach(func(key, val lua.LValue) {
-					keyStr := key.String()
-					if val.Type() == lua.LTString {
-						cfg.basicAuth[keyStr] = val.String()
-					} else {
-						L.ArgError(1, "basicAuth `"+keyStr+"` must be string")
-					}
-				})
-			} else {
-				L.ArgError(1, "basicAuth must be table")
+			if val, ok := util.ArgLTableMap(L, key, v); ok {
+				for name, value := range val {
+					cfg.basicAuth[name] = value
+				}
 			}
 
 		case `proxy`:
-			if value, ok := v.(lua.LString); ok {
-				proxyUrl, err := url.Parse(value.String())
-				if err == nil {
-					cfg.proxy = proxyUrl
-				} else {
+			if val, ok := util.ArgLString(L, key, v); ok {
+				if proxyUrl, err := url.Parse(val); err != nil {
 					L.ArgError(1, "proxy must be http(s)://<username>:<password>@host:<port>")
+				} else {
+					cfg.proxy = proxyUrl
 				}
-			} else {
-				L.ArgError(1, "proxy must be string")
 			}
 
 		case `timeout`:
-			if value, ok := v.(lua.LNumber); ok {
-				cfg.timeout = time.Duration(value) * time.Millisecond
-			} else {
-				L.ArgError(1, "timeout must be number")
+			if val, ok := util.ArgLDuration(L, key, v); ok {
+				cfg.timeout = val
 			}
 
 		case `keepAlive`:
-			if value, ok := v.(lua.LNumber); ok {
-				cfg.keepAlive = time.Duration(value) * time.Millisecond
-			} else {
-				L.ArgError(1, "keepAlive must be number")
+			if val, ok := util.ArgLDuration(L, key, v); ok {
+				cfg.keepAlive = val
 			}
 
 		case `body`:
-			if value, ok := v.(lua.LString); ok {
-				cfg.body = []byte(string(value))
-			} else {
-				L.ArgError(1, "body must be string")
+			if val, ok := util.ArgLString(L, key, v); ok {
+				cfg.body = []byte(val)
 			}
 
 		case `max_body_size`:
-			if value, ok := v.(lua.LNumber); ok {
-				cfg.maxBodySize = int64(value)
-			} else {
-				L.ArgError(1, "body must be number")
+			if val, ok := util.ArgLInt64(L, key, v); ok {
+				cfg.maxBodySize = val
 			}
 		}
 	})

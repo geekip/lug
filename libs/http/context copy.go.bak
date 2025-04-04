@@ -23,6 +23,7 @@ type Context struct {
 	ErrorTemplate string
 	Hijacked      bool
 	TimedOut      bool
+	next          Handler
 	Done          chan struct{}
 }
 
@@ -50,6 +51,7 @@ func newContext(w http.ResponseWriter, r *http.Request) *Context {
 	ctx.Size = 0
 	ctx.Hijacked = false
 	ctx.TimedOut = false
+	ctx.next = nil
 
 	w.Header().Set(`Content-Type`, `text/html;charset=utf-8`)
 	w.Header().Set(`Server`, pkg.Name+`/`+pkg.Version)
@@ -68,7 +70,15 @@ func (ctx *Context) Release() {
 	ctx.Size = 0
 	ctx.Hijacked = false
 	ctx.TimedOut = false
+	ctx.next = nil
 	contextPool.Put(ctx)
+}
+
+func (ctx *Context) Next(L *lua.LState) int {
+	if ctx.next != nil {
+		ctx.next(ctx)
+	}
+	return 0
 }
 
 func (ctx *Context) Since() time.Duration {

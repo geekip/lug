@@ -12,7 +12,6 @@ import (
 	"path"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"lug/util"
@@ -34,7 +33,6 @@ type (
 		config     *ServerConfig
 		httpServer *http.Server
 		semaphore  *semaphore.Weighted
-		SigChan    chan os.Signal
 	}
 	ServerConfig struct {
 		Debug             bool
@@ -88,15 +86,11 @@ func newServer(L *lua.LState) int {
 		cfg = getServerConfig(L, opts, cfg)
 	}
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
-
 	server := &Server{
 		Module:    util.NewModule(L),
 		node:      newNode(),
 		config:    cfg,
 		semaphore: semaphore.NewWeighted(cfg.Workers),
-		SigChan:   sigChan,
 	}
 
 	methods := extendMethod(server)
@@ -158,6 +152,38 @@ func (s *Server) handle(method string) lua.LGFunction {
 	}
 }
 
+// func (s *Server) luaHttpHandler(handler *lua.LFunction, hasNext bool) Handler {
+// 	return func(ctx *Context) {
+// 		L := s.Vm
+// 		L.SetTop(0) // Clear the stack
+
+// 		cp := lua.P{
+// 			Fn:      handler,
+// 			NRet:    0,
+// 			Protect: true, // Enable error protection
+// 		}
+
+// 		w := ctx.getResponseLuaApi(L)
+// 		r := ctx.getRequestLuaApi(L)
+
+// 		var err error
+
+// 		if ctx.next != nil {
+// 			next := func(L *lua.LState) int {
+// 				ctx.next(ctx)
+// 				return 0
+// 			}
+// 			err = L.CallByParam(cp, w, r, L.NewClosure(next))
+// 		} else {
+// 			err = L.CallByParam(cp, w, r)
+// 		}
+
+// 		if err != nil {
+// 			ctx.setStatus(http.StatusInternalServerError, err)
+// 		}
+// 	}
+// }
+
 func (s *Server) Listen(L *lua.LState) int {
 	s.config.Addr = L.CheckString(1)
 	if err := s.start(); err != nil {
@@ -165,35 +191,18 @@ func (s *Server) Listen(L *lua.LState) int {
 		s.logger("error", err)
 		return 1
 	}
-
-	// Wait for Lua context to be done as well
-	go func() {
-		ctx := L.Context()
-		if ctx != nil {
-			<-ctx.Done()
-			process, err := os.FindProcess(os.Getpid())
-			if err != nil {
-				return
-			}
-			err = process.Signal(syscall.SIGINT)
-			if err != nil {
-				return
-			}
-			s.shutdown()
-		}
-	}()
-
 	s.waitForInterrupt()
 	return 0
 }
 
 func (s *Server) waitForInterrupt() {
-	sig := <-s.SigChan
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	sig := <-sigChan
 	s.logger("shutdown", fmt.Sprintf("Received signal: %v", sig))
 	s.shutdown()
 }
 
-// shutdown initiates the graceful shutdown of the server.
 func (s *Server) shutdown() {
 	s.httpServer.SetKeepAlivesEnabled(false)
 
@@ -282,16 +291,12 @@ func (s *Server) processRequest(ctx *Context) {
 
 		if err == nil {
 			ctx.Params = params
-			w, r := ctx.getResponseLuaApi(s.Vm), ctx.getRequestLuaApi(s.Vm)
-			if err := util.CallLua(s.Vm, handler, w, r); err != nil {
-				ctx.setStatus(http.StatusInternalServerError, err)
-			}
+			handler(ctx)
 		}
 	}()
 
 	select {
 	case <-done:
-		// Request processed successfully or with an error
 	case <-timeoutCtx.Done():
 		ctx.TimedOut = true
 		ctx.setStatus(http.StatusRequestTimeout, errors.New("the service timed out while processing the request. Please try again later or check your network connection"))
@@ -314,55 +319,41 @@ func (s *Server) getListener(addr string) (net.Listener, error) {
 }
 
 func (s *Server) applyMiddlewares(handler Handler) Handler {
-	if len(s.middlewares) == 0 {
-		return handler
-	}
-	s.mu.Lock()
 	middlewares := append([]Handler{}, s.middlewares...)
 	middlewares = append(middlewares, handler)
-	s.mu.Unlock()
-
-	// Create a chain of Go functions that call the Lua middlewares
-	var nextHandler Handler = nil
 	count := len(middlewares) - 1
+
 	for i := count; i >= 0; i-- {
-		isFinal := i == count
-		// Capture the current nextHandler in the closure
-		next := nextHandler
-		nextHandler = s.gethandler(middlewares[i], next, isFinal)
+		// fmt.Println(i, count)
+		mw := middlewares[i]
+		next := handler
+		handler = s.Vm.NewClosure(func(l *lua.LState) int {
+			return 0
+		})
 	}
-	return nextHandler
-}
-
-func (s *Server) gethandler(middleware, next Handler, isFinal bool) Handler {
-	handler := s.Vm.NewFunction(func(L *lua.LState) int {
-		w, r := L.CheckTable(1), L.CheckTable(2)
-
-		// Call the final handler
-		if isFinal {
-			if err := util.CallLua(L, middleware, w, r); err != nil {
-				L.RaiseError(err.Error())
-			}
-			return 0
-		}
-
-		// Call the middleware, passing the next handler as an argument
-		fn := func(l *lua.LState) int {
-			if next != nil {
-				if err := util.CallLua(l, next, w, r); err != nil {
-					L.RaiseError(err.Error())
-				}
-			}
-			return 0
-		}
-		lNext := L.NewFunction(fn)
-		if err := util.CallLua(L, middleware, w, r, lNext); err != nil {
-			L.RaiseError(err.Error())
-		}
-		return 0
-	})
 	return handler
 }
+
+// func (s *Server) applyMiddlewares(handler Handler) Handler {
+// 	middlewares := append([]Handler{}, s.middlewares...)
+// 	middlewares = append(middlewares, handler)
+// 	count := len(middlewares) - 1
+
+// 	for i := count; i >= 0; i-- {
+// 		// fmt.Println(i, count)
+// 		mw := middlewares[i]
+// 		next := handler
+// 		handler = func(ctx *Context) {
+// 			if i == count {
+// 				ctx.next = nil
+// 			} else {
+// 				ctx.next = next
+// 			}
+// 			mw(ctx)
+// 		}
+// 	}
+// 	return handler
+// }
 
 func (s *Server) pathJoin(pattern string) string {
 	if pattern == "" {

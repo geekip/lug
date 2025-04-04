@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -65,16 +66,16 @@ Available options are:
 		optInteractive = true
 	}
 
-	// ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 
 	// Initialize Lua state
 	L := util.VmPool.Get()
 	defer func() {
 		util.VmPool.Put(L)
-		// cancel()
+		cancel()
 	}()
 
-	// L.SetContext(ctx)
+	L.SetContext(ctx)
 
 	// L := lua.NewState()
 	// defer L.Close()

@@ -47,19 +47,16 @@ func init() {
 	}
 }
 
-func serveFile(L *lua.LState, root string, lopts *lua.LTable, res *Response) (int, error) {
+func serveFile(L *lua.LState, root string, lopts *lua.LTable, ctx *Context) (int, error) {
 
-	var dirName string
-	if res.Request.PathValue("prefix") != "" {
-		dirName = res.Request.PathValue("path")
-	}
+	dirName := ctx.r.PathValue("path")
 	fullPath := path.Join(root, dirName)
 
 	if !isPathSafe(root, fullPath) {
 		return http.StatusForbidden, errors.New("path traversal attempt detected")
 	}
 
-	file, err := getfile(fullPath)
+	file, err := getFile(fullPath)
 	if err != nil {
 		return handleFileError(err)
 	}
@@ -72,21 +69,20 @@ func serveFile(L *lua.LState, root string, lopts *lua.LTable, res *Response) (in
 
 	if info.IsDir() {
 		opts := getServeFileOpts(L, lopts)
-		return handleDirectory(fullPath, dirName, file, opts, res)
+		return handleDirectory(fullPath, dirName, file, opts, ctx)
 	}
 
-	res.Size = int(info.Size())
-	writeFile(file, info, res)
+	ctx.Size = int(info.Size())
+	writeFile(file, info, ctx)
 	return 200, nil
 }
 
-func writeFile(file http.File, info fs.FileInfo, res *Response) {
+func writeFile(file http.File, info fs.FileInfo, ctx *Context) {
 	filename, modTime := info.Name(), info.ModTime()
 	contentType := mime.TypeByExtension(filepath.Ext(filename))
 	if contentType == "" {
 		buf := make([]byte, 512)
 		n, err := file.Read(buf)
-
 		if (err == nil || err == io.EOF) && n > 0 {
 			contentType = http.DetectContentType(buf[:n])
 			if seeker, ok := file.(io.Seeker); ok {
@@ -96,8 +92,8 @@ func writeFile(file http.File, info fs.FileInfo, res *Response) {
 			contentType = "application/octet-stream"
 		}
 	}
-	res.ResponseWriter.Header().Set("Content-Type", contentType)
-	http.ServeContent(res.ResponseWriter, res.Request, filename, modTime, file)
+	ctx.w.Header().Set("Content-Type", contentType)
+	http.ServeContent(ctx.w, ctx.r, filename, modTime, file)
 }
 
 func isPathSafe(root, target string) bool {
@@ -126,7 +122,7 @@ func handleFileError(err error) (int, error) {
 	return statusCode, err
 }
 
-func handleDirectory(root, dirName string, file http.File, opts *serveFileOpts, res *Response) (int, error) {
+func handleDirectory(root, dirName string, file http.File, opts *serveFileOpts, ctx *Context) (int, error) {
 
 	if opts.ignorebase {
 		return http.StatusForbidden, errors.New("directory access forbidden")
@@ -135,26 +131,17 @@ func handleDirectory(root, dirName string, file http.File, opts *serveFileOpts, 
 	if opts.autoindex {
 		if file, info := findIndexFile(opts, root); file != nil {
 			defer file.Close()
-			res.Size = int(info.Size())
-			http.ServeContent(res.ResponseWriter, res.Request, info.Name(), info.ModTime(), file)
+			ctx.Size = int(info.Size())
+			http.ServeContent(ctx.w, ctx.r, info.Name(), info.ModTime(), file)
 			return 0, nil
 		}
 	}
-
-	if statusCode, err := dirList(file, dirName, opts, res); err != nil {
-		return statusCode, err
-	}
-	return 0, nil
-}
-
-func getfile(path string) (http.File, error) {
-	fsys := http.Dir(filepath.Dir(path))
-	return fsys.Open(filepath.Base(path))
+	return dirList(file, dirName, opts, ctx)
 }
 
 func findIndexFile(opts *serveFileOpts, dirPath string) (http.File, fs.FileInfo) {
 	for _, index := range opts.index {
-		file, err := getfile(filepath.Join(dirPath, index))
+		file, err := getFile(filepath.Join(dirPath, index))
 		if err != nil {
 			continue
 		}
@@ -168,7 +155,7 @@ func findIndexFile(opts *serveFileOpts, dirPath string) (http.File, fs.FileInfo)
 	return nil, nil
 }
 
-func dirList(file http.File, dirName string, opts *serveFileOpts, res *Response) (int, error) {
+func dirList(file http.File, dirName string, opts *serveFileOpts, ctx *Context) (int, error) {
 	dirName = path.Clean("/" + dirName)
 	if !strings.HasSuffix(dirName, "/") {
 		dirName += "/"
@@ -216,16 +203,21 @@ func dirList(file http.File, dirName string, opts *serveFileOpts, res *Response)
 	}
 
 	if err == nil {
-		size, err = buf.WriteTo(res.ResponseWriter)
+		size, err = buf.WriteTo(ctx.w)
 	}
 
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}
 
-	res.Size = int(size)
+	ctx.Size = int(size)
 
 	return 0, nil
+}
+
+func getFile(path string) (http.File, error) {
+	fsys := http.Dir(filepath.Dir(path))
+	return fsys.Open(filepath.Base(path))
 }
 
 func getServeFileOpts(L *lua.LState, lopts *lua.LTable) *serveFileOpts {
@@ -241,46 +233,26 @@ func getServeFileOpts(L *lua.LState, lopts *lua.LTable) *serveFileOpts {
 		switch key {
 
 		case "ignorebase":
-			if val, ok := v.(lua.LBool); ok {
-				opts.ignorebase = bool(val)
-			} else {
-				L.RaiseError("ignorebase must be a boolean")
+			if val, ok := util.ArgLBool(L, key, v); ok {
+				opts.ignorebase = val
 			}
 
 		case "autoindex":
-			if val, ok := v.(lua.LBool); ok {
-				opts.autoindex = bool(val)
-			} else {
-				L.RaiseError("autoindex must be a boolean")
+			if val, ok := util.ArgLBool(L, key, v); ok {
+				opts.autoindex = val
 			}
 
 		case "index":
-			if tbl, ok := v.(*lua.LTable); ok {
-				opts.index = parseStringTable(L, tbl)
-			} else {
-				L.RaiseError("index must be a array table")
+			if val, ok := util.ArgLTable(L, key, v); ok {
+				opts.index = val
 			}
 
 		case "prettyindex":
-			if val, ok := v.(lua.LBool); ok {
-				opts.prettyindex = bool(val)
-			} else {
-				L.RaiseError("prettyindex must be a boolean")
+			if val, ok := util.ArgLBool(L, key, v); ok {
+				opts.prettyindex = val
 			}
 
 		}
 	})
 	return opts
-}
-
-func parseStringTable(L *lua.LState, tbl *lua.LTable) []string {
-	var result []string
-	tbl.ForEach(func(_, lv lua.LValue) {
-		if str, ok := lv.(lua.LString); ok {
-			result = append(result, str.String())
-		} else {
-			L.RaiseError("index table contains non-string value")
-		}
-	})
-	return result
 }
