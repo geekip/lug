@@ -77,9 +77,6 @@ Available options are:
 
 	L.SetContext(ctx)
 
-	// L := lua.NewState()
-	// defer L.Close()
-
 	// Set memory limit
 	if optMemoryLimit > 0 {
 		L.SetMx(optMemoryLimit)

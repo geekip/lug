@@ -84,53 +84,43 @@ func (u *Url) ParseURL(L *lua.LState) int {
 func (u *Url) BuildURL(L *lua.LState) int {
 	t := L.CheckTable(1)
 	U := &url.URL{}
+
 	t.ForEach(func(k lua.LValue, v lua.LValue) {
-		// parse scheme
-		if k.String() == `scheme` {
-			if value, ok := v.(lua.LString); ok {
-				U.Scheme = string(value)
-			} else {
-				L.ArgError(1, "scheme must be string")
+		key := k.String()
+		switch key {
+		case `scheme`:
+			if val, ok := util.CheckString(L, key, v); ok {
+				U.Scheme = val
 			}
-		}
-		// parse host
-		if k.String() == `host` {
-			if value, ok := v.(lua.LString); ok {
-				U.Host = string(value)
-			} else {
-				L.ArgError(1, "host must be string")
+
+		case `host`:
+			if val, ok := util.CheckString(L, key, v); ok {
+				U.Host = val
 			}
-		}
-		// parse path
-		if k.String() == `path` {
-			if value, ok := v.(lua.LString); ok {
-				U.Path = string(value)
-			} else {
-				L.ArgError(1, "path must be string")
+
+		case `path`:
+			if val, ok := util.CheckString(L, key, v); ok {
+				U.Path = val
 			}
-		}
-		// parse user
-		if k.String() == `user` {
-			username, password := ``, ``
-			if value, ok := v.(*lua.LTable); ok {
-				username = value.RawGetString(`username`).String()
-				password = value.RawGetString(`password`).String()
-			} else {
-				L.ArgError(1, "user must be table")
+
+		case `user`:
+			username, password := "", ""
+			if val, ok := util.CheckTableMap(L, key, v); ok {
+				username = val[`username`]
+				password = val[`password`]
 			}
 			U.User = url.UserPassword(username, password)
-		}
-		// parse query
-		if k.String() == `query` {
+
+		case `query`:
 			values := make(url.Values, 0)
 			if value, ok := v.(*lua.LTable); ok {
-				value.ForEach(func(k lua.LValue, v lua.LValue) {
-					if value, ok := v.(*lua.LTable); ok {
+				value.ForEach(func(lk lua.LValue, lv lua.LValue) {
+					if value, ok := lv.(*lua.LTable); ok {
 						queryValues := []string{}
-						value.ForEach(func(k lua.LValue, v lua.LValue) {
-							queryValues = append(queryValues, v.String())
+						value.ForEach(func(lvk lua.LValue, lvv lua.LValue) {
+							queryValues = append(queryValues, lvv.String())
 						})
-						values[k.String()] = queryValues
+						values[lk.String()] = queryValues
 					} else {
 						L.ArgError(1, "query values must be table")
 					}
@@ -139,13 +129,10 @@ func (u *Url) BuildURL(L *lua.LState) int {
 			} else {
 				L.ArgError(1, "query must be table")
 			}
-		}
-		// parse fragment
-		if k.String() == `fragment` {
-			if value, ok := v.(lua.LString); ok {
-				U.Fragment = string(value)
-			} else {
-				L.ArgError(1, "fragment must be string")
+
+		case `fragment`:
+			if val, ok := util.CheckString(L, key, v); ok {
+				U.Fragment = val
 			}
 		}
 

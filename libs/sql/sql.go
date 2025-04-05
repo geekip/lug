@@ -248,7 +248,6 @@ func (s *Sql) Update(L *lua.LState) int {
 		strings.Join(sets, ", "),
 		s.where,
 	)
-	fmt.Println(query)
 	return s.exec(query, values)
 }
 
@@ -395,7 +394,6 @@ func (s *Sql) getNativeQuery() (string, []interface{}) {
 	for i := 2; i <= s.Vm.GetTop(); i++ {
 		args = append(args, s.Vm.CheckAny(i))
 	}
-	fmt.Println(query)
 	return query, args
 }
 

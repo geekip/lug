@@ -7,96 +7,121 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-func ArgLString(L *lua.LState, key string, v lua.LValue) (string, bool) {
+func getIndex(n []int) int {
+	if len(n) > 0 {
+		return n[0]
+	}
+	return 1
+}
+
+func CheckString(L *lua.LState, key string, v lua.LValue, n ...int) (string, bool) {
 	if val, ok := v.(lua.LString); ok {
 		return val.String(), true
 	}
-	L.ArgError(1, fmt.Sprintf("%s must be a string", key))
+	i := getIndex(n)
+	L.ArgError(i, fmt.Sprintf("%s must be a string", key))
 	return "", false
 }
 
-func ArgLInt(L *lua.LState, key string, v lua.LValue) (int, bool) {
+func CheckInt(L *lua.LState, key string, v lua.LValue, n ...int) (int, bool) {
 	if val, ok := v.(lua.LNumber); ok {
 		return int(val), true
 	}
-	L.ArgError(1, fmt.Sprintf("%s must be a number", key))
+	i := getIndex(n)
+	L.ArgError(i, fmt.Sprintf("%s must be a number", key))
 	return 0, false
 }
 
-func ArgLInt64(L *lua.LState, key string, v lua.LValue) (int64, bool) {
+func CheckInt64(L *lua.LState, key string, v lua.LValue, n ...int) (int64, bool) {
 	if val, ok := v.(lua.LNumber); ok {
 		return int64(val), true
 	}
-	L.ArgError(1, fmt.Sprintf("%s must be a number", key))
+	i := getIndex(n)
+	L.ArgError(i, fmt.Sprintf("%s must be a number", key))
 	return 0, false
 }
 
-func ArgLDuration(L *lua.LState, key string, v lua.LValue) (time.Duration, bool) {
+func CheckDuration(L *lua.LState, key string, v lua.LValue, n ...int) (time.Duration, bool) {
 	if val, ok := v.(lua.LNumber); ok {
 		return time.Duration(int(val)) * time.Second, true
 	}
-	L.ArgError(1, fmt.Sprintf("%s must be a number (in seconds)", key))
+	i := getIndex(n)
+	L.ArgError(i, fmt.Sprintf("%s must be a number (in seconds)", key))
 	return 0, false
 }
 
-func ArgLTime(L *lua.LState, key string, v lua.LValue) (time.Time, bool) {
+func CheckTime(L *lua.LState, key string, v lua.LValue, n ...int) (time.Time, bool) {
+	i := getIndex(n)
 	if val, ok := v.(lua.LString); ok {
 		t, err := time.Parse(time.RFC3339, val.String())
 		if err != nil {
-			L.ArgError(1, fmt.Sprintf("Invalid %s format: "+err.Error(), key))
+			L.ArgError(i, fmt.Sprintf("Invalid %s format: %s", key, err.Error()))
+			return time.Time{}, false
 		}
 		return t, true
 	}
-	L.ArgError(1, fmt.Sprintf("%s must be a string (in time RFC3339)", key))
+	L.ArgError(i, fmt.Sprintf("%s must be a string (RFC3339 format)", key))
 	return time.Time{}, false
 }
 
-func ArgLFunction(L *lua.LState, key string, v lua.LValue) (*lua.LFunction, bool) {
+func CheckFunction(L *lua.LState, key string, v lua.LValue, n ...int) (*lua.LFunction, bool) {
 	if val, ok := v.(*lua.LFunction); ok {
 		return val, true
 	}
-	L.ArgError(1, fmt.Sprintf("%s must be a function", key))
+	i := getIndex(n)
+	L.ArgError(i, fmt.Sprintf("%s must be a function", key))
 	return nil, false
 }
 
-func ArgLBool(L *lua.LState, key string, v lua.LValue) (bool, bool) {
+func CheckBool(L *lua.LState, key string, v lua.LValue, n ...int) (bool, bool) {
 	if val, ok := v.(lua.LBool); ok {
 		return bool(val), true
 	}
-	L.ArgError(1, fmt.Sprintf("%s must be a function", key))
+	i := getIndex(n)
+	L.ArgError(i, fmt.Sprintf("%s must be a boolean", key))
 	return false, false
 }
 
-func ArgLTable(L *lua.LState, key string, v lua.LValue) ([]string, bool) {
+func CheckTable(L *lua.LState, key string, v lua.LValue, n ...int) ([]string, bool) {
+	i := getIndex(n)
 	if val, ok := v.(*lua.LTable); ok {
-		var result []string
-		val.ForEach(func(_, lv lua.LValue) {
-			if str, ok := lv.(lua.LString); ok {
-				result = append(result, str.String())
-			} else {
-				L.ArgError(1, fmt.Sprintf("%s table contains non-string value", key))
-				return
+
+		maxIndex := val.MaxN()
+		if maxIndex == 1 {
+			maxn := val.Len()
+			result := make([]string, maxn)
+			for idx := 1; idx <= maxn; idx++ {
+				lv := val.RawGetInt(idx)
+				if str, ok := lv.(lua.LString); ok {
+					result = append(result, str.String())
+				} else {
+					L.ArgError(i, fmt.Sprintf("%s table contains non-string value at index %d", key, idx))
+					return nil, false
+				}
 			}
-		})
-		return result, true
+			return result, true
+		} else {
+			L.ArgError(i, fmt.Sprintf("%s must be a table (array)", key))
+		}
 	}
-	L.ArgError(1, fmt.Sprintf("%s must be a function", key))
+	L.ArgError(i, fmt.Sprintf("%s must be a table", key))
 	return nil, false
 }
 
-func ArgLTableMap(L *lua.LState, key string, v lua.LValue) (map[string]string, bool) {
+func CheckTableMap(L *lua.LState, key string, v lua.LValue, n ...int) (map[string]string, bool) {
+	i := getIndex(n)
 	if val, ok := v.(*lua.LTable); ok {
-		var result map[string]string
+		result := make(map[string]string, val.Len())
 		val.ForEach(func(lk, lv lua.LValue) {
 			if str, ok := lv.(lua.LString); ok {
 				result[lk.String()] = str.String()
 			} else {
-				L.ArgError(1, fmt.Sprintf("%s table contains non-string value", key))
+				L.ArgError(i, fmt.Sprintf("%s table contains non-string value", key))
 				return
 			}
 		})
 		return result, true
 	}
-	L.ArgError(1, fmt.Sprintf("%s must be a table", key))
+	L.ArgError(i, fmt.Sprintf("%s must be a table", key))
 	return nil, false
 }

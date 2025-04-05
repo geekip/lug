@@ -10,6 +10,9 @@ import (
 )
 
 func (s *Server) logger(logType string, args ...interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var callback *lua.LFunction
 	var logMessage string
 	var ok bool
@@ -52,6 +55,7 @@ func (s *Server) logger(logType string, args ...interface{}) {
 		luaArgs = []lua.LValue{lua.LString(logMessage)}
 
 	case "request":
+		return
 		callback = s.config.onRequest
 		if len(args) < 1 {
 			return

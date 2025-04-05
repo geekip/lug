@@ -27,12 +27,12 @@ func newThread(L *lua.LState) int {
 	}
 	mod.SetMethods(util.Methods{
 		"wait": mod.wait,
-		"run":  mod.run,
+		"go":   mod.Go,
 	})
 	return mod.Self()
 }
 
-func (m *Thread) run(L *lua.LState) int {
+func (m *Thread) Go(L *lua.LState) int {
 
 	callback := L.CheckFunction(1)
 	m.wg.Add(1)

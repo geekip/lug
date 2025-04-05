@@ -2,6 +2,7 @@ package sql
 
 import (
 	"database/sql"
+	"lug/util"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ type (
 func getConfig(L *lua.LState) *dbConfig {
 	driver := strings.TrimSpace(L.CheckString(1))
 	dsn := strings.TrimSpace(L.CheckString(2))
+	lopts := L.OptTable(3, L.NewTable())
 
 	if driver == "" {
 		L.ArgError(1, "driver cannot be specified")
@@ -39,39 +41,34 @@ func getConfig(L *lua.LState) *dbConfig {
 		dsn:          dsn,
 		driver:       driver,
 	}
-	if L.GetTop() > 2 {
-		L.CheckTable(3).ForEach(func(k lua.LValue, v lua.LValue) {
-			if k.String() == `shared` {
-				if val, ok := v.(lua.LBool); ok {
-					config.shared = bool(val)
-				} else {
-					L.ArgError(3, "shared must be bool")
-				}
+
+	lopts.ForEach(func(k lua.LValue, v lua.LValue) {
+		key := k.String()
+		switch key {
+		case `shared`:
+			if val, ok := util.CheckBool(L, key, v, 3); ok {
+				config.shared = val
 			}
-			if k.String() == `maxOpenConns` {
-				if val, ok := v.(lua.LNumber); ok {
-					num := int(val)
-					if num < 0 {
-						L.ArgError(3, "maxOpenConns must be non-negative")
-					}
-					config.maxOpenConns = num
-				} else {
-					L.ArgError(3, "maxOpenConns must be number")
+
+		case `maxOpenConns`:
+			if val, ok := util.CheckInt(L, key, v, 3); ok {
+				if val < 0 {
+					L.ArgError(3, "maxOpenConns must be non-negative")
 				}
+				config.maxOpenConns = val
 			}
-			if k.String() == `maxIdleConns` {
-				if val, ok := v.(lua.LNumber); ok {
-					num := int(val)
-					if num < 0 {
-						L.ArgError(3, "maxIdleConns must be non-negative")
-					}
-					config.maxIdleConns = num
-				} else {
-					L.ArgError(3, "maxIdleConns must be number")
+
+		case `maxIdleConns`:
+			if val, ok := util.CheckInt(L, key, v, 3); ok {
+				if val < 0 {
+					L.ArgError(3, "maxIdleConns must be non-negative")
 				}
+				config.maxOpenConns = val
 			}
-		})
-	}
+
+		}
+	})
+
 	return config
 }
 
@@ -89,32 +86,25 @@ func getTxOptions(L *lua.LState) *txConfig {
 	}
 
 	lopts.ForEach(func(k lua.LValue, v lua.LValue) {
-		if k.String() == `isolation` {
-			if val, ok := v.(lua.LNumber); ok {
-				num := int(val)
-				if num >= 0 && num <= 7 {
-					config.options.Isolation = sql.IsolationLevel(num)
+		key := k.String()
+		switch key {
+		case `isolation`:
+			if val, ok := util.CheckInt(L, key, v, 2); ok {
+				if val >= 0 && val <= 7 {
+					config.options.Isolation = sql.IsolationLevel(val)
 				}
-			} else {
-				L.ArgError(1, "isolation must be number")
 			}
-		}
-
-		if k.String() == `readOnly` {
-			if val, ok := v.(lua.LBool); ok {
-				config.options.ReadOnly = bool(val)
-			} else {
-				L.ArgError(1, "readOnly must be bool")
+		case `readOnly`:
+			if val, ok := util.CheckBool(L, key, v, 2); ok {
+				config.options.ReadOnly = val
 			}
-		}
 
-		if k.String() == `timeout` {
-			if val, ok := v.(lua.LNumber); ok {
+		case `timeout`:
+			if val, ok := util.CheckInt(L, key, v, 2); ok {
 				config.timeout = time.Duration(val) * time.Second
-			} else {
-				L.ArgError(1, "timeout must be number(S)")
 			}
 		}
+
 	})
 	return config
 }

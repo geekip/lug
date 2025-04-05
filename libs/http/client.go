@@ -188,50 +188,50 @@ func updateClientConfig(L *lua.LState, opts *lua.LTable, cfg *clientConfig) {
 		switch key {
 
 		case `userAgent`:
-			if val, ok := util.ArgLString(L, key, v); ok {
+			if val, ok := util.CheckString(L, key, v, 2); ok {
 				cfg.userAgent = val
 			}
 
 		case `headers`:
-			if val, ok := util.ArgLTableMap(L, key, v); ok {
+			if val, ok := util.CheckTableMap(L, key, v, 2); ok {
 				for name, value := range val {
 					cfg.headers.Add(name, value)
 				}
 			}
 
 		case `basicAuth`:
-			if val, ok := util.ArgLTableMap(L, key, v); ok {
+			if val, ok := util.CheckTableMap(L, key, v, 2); ok {
 				for name, value := range val {
 					cfg.basicAuth[name] = value
 				}
 			}
 
 		case `proxy`:
-			if val, ok := util.ArgLString(L, key, v); ok {
+			if val, ok := util.CheckString(L, key, v, 2); ok {
 				if proxyUrl, err := url.Parse(val); err != nil {
-					L.ArgError(1, "proxy must be http(s)://<username>:<password>@host:<port>")
+					L.ArgError(2, "proxy must be http(s)://<username>:<password>@host:<port>")
 				} else {
 					cfg.proxy = proxyUrl
 				}
 			}
 
 		case `timeout`:
-			if val, ok := util.ArgLDuration(L, key, v); ok {
+			if val, ok := util.CheckDuration(L, key, v, 2); ok {
 				cfg.timeout = val
 			}
 
 		case `keepAlive`:
-			if val, ok := util.ArgLDuration(L, key, v); ok {
+			if val, ok := util.CheckDuration(L, key, v, 2); ok {
 				cfg.keepAlive = val
 			}
 
 		case `body`:
-			if val, ok := util.ArgLString(L, key, v); ok {
+			if val, ok := util.CheckString(L, key, v, 2); ok {
 				cfg.body = []byte(val)
 			}
 
 		case `max_body_size`:
-			if val, ok := util.ArgLInt64(L, key, v); ok {
+			if val, ok := util.CheckInt64(L, key, v, 2); ok {
 				cfg.maxBodySize = val
 			}
 		}

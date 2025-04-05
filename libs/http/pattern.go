@@ -22,87 +22,103 @@ type segment struct {
 }
 
 func parsePattern(path string) (_ *pattern, err error) {
-	if len(path) == 0 {
+	if path == "" {
 		return nil, errors.New("empty pattern")
 	}
-	off := 1
+
+	p := &pattern{path: path}
+	off := 0
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("at offset %d: %w", off, err)
 		}
 	}()
 
-	p := &pattern{path: path}
-
+	// Parse host part
 	rest := path
 	i := strings.IndexByte(rest, '/')
 	if i < 0 {
 		return nil, errors.New("host/path missing /")
 	}
+	p.host, rest = rest[:i], rest[i:]
+	off += i
 
-	if i == 0 {
-		p.host = ""
-		rest = rest[0:]
-	} else {
-		p.host = rest[:i]
-		rest = rest[i:]
+	// Validate host
+	if p.host != "" {
 		if j := strings.IndexByte(p.host, '{'); j >= 0 {
-			off += j
+			off = j // Host starts at offset 0 in path
 			return nil, errors.New("host contains '{' (missing initial '/'?)")
 		}
 	}
-	off += i
-	seenNames := map[string]bool{}
+
+	// Parse path segments
+	seenNames := make(map[string]bool)
 	for len(rest) > 0 {
-		rest = rest[1:]
+		rest = rest[1:] // Skip '/'
 		off = len(path) - len(rest)
+
 		if len(rest) == 0 {
-			// p.segments = append(p.segments, segment{name: "/",param: true, wild: true})
-			break
+			break // Trailing slash
 		}
-		i := strings.IndexByte(rest, '/')
-		if i < 0 {
-			i = len(rest)
+
+		// Find next segment
+		end := strings.IndexByte(rest, '/')
+		if end < 0 {
+			end = len(rest)
 		}
-		var seg string
-		seg, rest = rest[:i], rest[i:]
-		if i := strings.IndexByte(seg, '{'); i < 0 {
-			seg = pathUnescape(seg)
-			p.segments = append(p.segments, segment{name: seg})
-		} else {
-			if i != 0 {
-				return nil, errors.New("bad wildcard segment (must start with '{')")
-			}
-			if seg[len(seg)-1] != '}' {
-				return nil, errors.New("bad wildcard segment (must end with '}')")
-			}
-			name := seg[1 : len(seg)-1]
+		segStr := rest[:end]
+		rest = rest[end:]
 
-			name, wild := strings.CutSuffix(name, "...")
-			if wild && len(rest) != 0 {
-				return nil, errors.New("{...} wildcard not at end")
-			}
-
-			parts := strings.SplitN(name, `:`, 2)
-			name = parts[0]
-			var regex string
-			if len(parts) > 1 {
-				regex = parts[1]
-			}
-
-			if name == "" {
-				return nil, errors.New("empty wildcard")
-			}
-			if !isValidWildcardName(name) {
-				return nil, fmt.Errorf("bad wildcard name %q", name)
-			}
-
-			if seenNames[name] {
-				return nil, fmt.Errorf("duplicate wildcard name %q", name)
-			}
-			seenNames[name] = true
-			p.segments = append(p.segments, segment{name: name, param: true, wild: wild, regexp: regex})
+		if !strings.Contains(segStr, "{") {
+			// Normal segment
+			p.segments = append(p.segments, segment{
+				name: pathUnescape(segStr),
+			})
+			continue
 		}
+
+		// Parameter segment
+		if segStr[0] != '{' || segStr[len(segStr)-1] != '}' {
+			return nil, errors.New("wildcard segment must be enclosed in '{...}'")
+		}
+
+		content := segStr[1 : len(segStr)-1]
+		wild := false
+		if strings.HasSuffix(content, "...") {
+			wild = true
+			content = content[:len(content)-3]
+		}
+
+		// Split name and regex
+		name, regex := content, ""
+		if colon := strings.IndexByte(content, ':'); colon >= 0 {
+			name = content[:colon]
+			regex = content[colon+1:]
+		}
+
+		// Validate name
+		if name == "" {
+			return nil, errors.New("empty wildcard name")
+		}
+		if !isValidWildcardName(name) {
+			return nil, fmt.Errorf("invalid wildcard name %q", name)
+		}
+		if seenNames[name] {
+			return nil, fmt.Errorf("duplicate wildcard name %q", name)
+		}
+		seenNames[name] = true
+
+		// Validate wildcard position
+		if wild && len(rest) > 0 {
+			return nil, errors.New("{...} wildcard must be the last segment")
+		}
+
+		p.segments = append(p.segments, segment{
+			name:   name,
+			param:  true,
+			wild:   wild,
+			regexp: regex,
+		})
 	}
 	return p, nil
 }

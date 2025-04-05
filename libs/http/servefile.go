@@ -233,22 +233,22 @@ func getServeFileOpts(L *lua.LState, lopts *lua.LTable) *serveFileOpts {
 		switch key {
 
 		case "ignorebase":
-			if val, ok := util.ArgLBool(L, key, v); ok {
+			if val, ok := util.CheckBool(L, key, v); ok {
 				opts.ignorebase = val
 			}
 
 		case "autoindex":
-			if val, ok := util.ArgLBool(L, key, v); ok {
+			if val, ok := util.CheckBool(L, key, v); ok {
 				opts.autoindex = val
 			}
 
 		case "index":
-			if val, ok := util.ArgLTable(L, key, v); ok {
+			if val, ok := util.CheckTable(L, key, v); ok {
 				opts.index = val
 			}
 
 		case "prettyindex":
-			if val, ok := util.ArgLBool(L, key, v); ok {
+			if val, ok := util.CheckBool(L, key, v); ok {
 				opts.prettyindex = val
 			}
 

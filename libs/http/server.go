@@ -53,6 +53,10 @@ type (
 		onSuccess         *lua.LFunction // 服务成功
 		onShutdown        *lua.LFunction // 服务关闭
 	}
+	RequestResult struct {
+		statusCode int
+		err        error
+	}
 )
 
 func extendMethod(s *Server) util.Methods {
@@ -101,9 +105,10 @@ func newServer(L *lua.LState) int {
 
 	methods := extendMethod(server)
 	server.SetMethods(methods, util.Methods{
-		"group":    server.Group,
-		"listen":   server.Listen,
-		"shutdown": server.Shutdown,
+		"group":       server.Group,
+		"listen":      server.Listen,
+		"shutdown":    server.Shutdown,
+		"stripPrefix": server.StripPrefix,
 	})
 
 	return server.Self()
@@ -112,12 +117,13 @@ func newServer(L *lua.LState) int {
 func (s *Server) Group(L *lua.LState) int {
 	pattern := L.CheckString(1)
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	middlewares := append([]Handler{}, s.middlewares...)
+	s.mu.Unlock()
 	group := &Server{
 		Module:      util.NewModule(L),
 		prefix:      s.pathJoin(pattern),
 		node:        s.node,
-		middlewares: append([]Handler{}, s.middlewares...),
+		middlewares: middlewares,
 		config:      s.config,
 	}
 	methods := extendMethod(group)
@@ -147,6 +153,7 @@ func (s *Server) handle(method string) lua.LGFunction {
 		s.methods = nil
 		s.mu.Unlock()
 
+		// Combine method application into a single step to reduce overhead
 		for _, m := range methods {
 			mUpper := strings.ToUpper(m)
 			handler = s.applyMiddlewares(handler)
@@ -183,14 +190,11 @@ func (s *Server) Listen(L *lua.LState) int {
 		}
 	}()
 
-	s.waitForInterrupt()
-	return 0
-}
-
-func (s *Server) waitForInterrupt() {
 	sig := <-s.SigChan
 	s.logger("shutdown", fmt.Sprintf("Received signal: %v", sig))
 	s.shutdown()
+
+	return 0
 }
 
 // shutdown initiates the graceful shutdown of the server.
@@ -206,7 +210,7 @@ func (s *Server) shutdown() {
 	}
 
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		s.logger("error", fmt.Sprintf("Shutdown error: %v", err))
+		s.logger("error", fmt.Sprintf("server shutdown error: %v", err))
 	} else {
 		s.logger("shutdown", "server gracefully stopped")
 	}
@@ -258,7 +262,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.processRequest(ctx)
 }
 
-// 请求处理
 func (s *Server) processRequest(ctx *Context) {
 
 	defer func() {
@@ -268,33 +271,86 @@ func (s *Server) processRequest(ctx *Context) {
 		}
 	}()
 
-	// 超时控制上下文
 	timeoutCtx, cancel := context.WithTimeout(ctx.r.Context(), s.config.ProcessingTimeout)
 	defer cancel()
 
-	// 使用通道接收处理结果
-	done := make(chan struct{})
+	done := make(chan RequestResult, 1)
+
 	go func() {
-		defer close(done)
-
 		handler, params, statusCode, err := s.node.find(ctx.r)
-		ctx.setStatus(statusCode, err)
-
+		res := RequestResult{
+			statusCode: statusCode,
+			err:        err,
+		}
 		if err == nil {
 			ctx.Params = params
 			w, r := ctx.getResponseLuaApi(s.Vm), ctx.getRequestLuaApi(s.Vm)
-			if err := util.CallLua(s.Vm, handler, w, r); err != nil {
-				ctx.setStatus(http.StatusInternalServerError, err)
+			if callErr := util.CallLua(s.Vm, handler, w, r); callErr != nil {
+				res.statusCode = http.StatusInternalServerError
+				res.err = callErr
 			}
 		}
+		done <- res
 	}()
 
 	select {
-	case <-done:
+	case res := <-done:
 		// Request processed successfully or with an error
+		ctx.setStatus(res.statusCode, res.err)
 	case <-timeoutCtx.Done():
 		ctx.TimedOut = true
-		ctx.setStatus(http.StatusRequestTimeout, errors.New("the service timed out while processing the request. Please try again later or check your network connection"))
+		ctx.setStatus(http.StatusRequestTimeout, errors.New("request processing timeout"))
+	}
+}
+
+func (s *Server) StripPrefix(L *lua.LState) int {
+	prefix, handler := L.CheckString(1), L.CheckFunction(2)
+	fn := s.wrapStripPrefix(prefix, handler)
+	L.Push(L.NewFunction(fn))
+	return 1
+}
+
+func (s *Server) wrapStripPrefix(prefix string, handler *lua.LFunction) lua.LGFunction {
+	return func(L *lua.LState) int {
+		defer func() {
+			if r := recover(); r != nil {
+				if err, ok := r.(error); ok {
+					s.logger("error", err)
+				}
+			}
+		}()
+
+		w, r := L.CheckTable(1), L.CheckTable(2)
+		path := r.RawGetString("path").String()
+		setPathValue := r.RawGetString("setPathValue")
+
+		if fn, ok := setPathValue.(*lua.LFunction); ok {
+
+			setValue := func(key, value string) {
+				err := util.CallLua(L, fn, lua.LString(key), lua.LString(value))
+				if err != nil {
+					L.RaiseError("set value failed: %s", err.Error())
+				}
+			}
+
+			if strings.HasPrefix(path, prefix) {
+				newPath := strings.TrimPrefix(path, prefix)
+				if newPath == "" {
+					newPath = "/"
+				}
+				path = newPath
+				setValue("prefix", prefix)
+			}
+
+			setValue("path", path)
+		} else {
+			L.RaiseError("http.Request table missing required method setPathValue")
+		}
+
+		if err := util.CallLua(L, handler, w, r); err != nil {
+			L.RaiseError(err.Error())
+		}
+		return 0
 	}
 }
 
@@ -317,25 +373,29 @@ func (s *Server) applyMiddlewares(handler Handler) Handler {
 	if len(s.middlewares) == 0 {
 		return handler
 	}
+
 	s.mu.Lock()
 	middlewares := append([]Handler{}, s.middlewares...)
 	middlewares = append(middlewares, handler)
 	s.mu.Unlock()
 
+	return s.buildMiddlewareChain(middlewares)
+}
+
+func (s *Server) buildMiddlewareChain(middlewares []Handler) Handler {
 	// Create a chain of Go functions that call the Lua middlewares
 	var nextHandler Handler = nil
-	count := len(middlewares) - 1
-	for i := count; i >= 0; i-- {
-		isFinal := i == count
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		isFinal := i == len(middlewares)-1
 		// Capture the current nextHandler in the closure
 		next := nextHandler
-		nextHandler = s.gethandler(middlewares[i], next, isFinal)
+		nextHandler = s.wrapMiddleware(middlewares[i], next, isFinal)
 	}
 	return nextHandler
 }
 
-func (s *Server) gethandler(middleware, next Handler, isFinal bool) Handler {
-	handler := s.Vm.NewFunction(func(L *lua.LState) int {
+func (s *Server) wrapMiddleware(middleware, next Handler, isFinal bool) Handler {
+	return s.Vm.NewFunction(func(L *lua.LState) int {
 		w, r := L.CheckTable(1), L.CheckTable(2)
 
 		// Call the final handler
@@ -355,13 +415,13 @@ func (s *Server) gethandler(middleware, next Handler, isFinal bool) Handler {
 			}
 			return 0
 		}
+
 		lNext := L.NewFunction(fn)
 		if err := util.CallLua(L, middleware, w, r, lNext); err != nil {
 			L.RaiseError(err.Error())
 		}
 		return 0
 	})
-	return handler
 }
 
 func (s *Server) pathJoin(pattern string) string {
@@ -380,59 +440,59 @@ func getServerConfig(L *lua.LState, opts *lua.LTable, cfg *ServerConfig) *Server
 		key := k.String()
 		switch key {
 		case "debug":
-			if val, ok := util.ArgLBool(L, key, v); ok {
+			if val, ok := util.CheckBool(L, key, v); ok {
 				cfg.Debug = val
 			}
 		case "certFile":
-			if val, ok := util.ArgLString(L, key, v); ok {
+			if val, ok := util.CheckString(L, key, v); ok {
 				cfg.CertFile = val
 			}
 		case "keyFile":
-			if val, ok := util.ArgLString(L, key, v); ok {
+			if val, ok := util.CheckString(L, key, v); ok {
 				cfg.KeyFile = val
 			}
 		case "readTimeout":
-			if val, ok := util.ArgLDuration(L, key, v); ok {
+			if val, ok := util.CheckDuration(L, key, v); ok {
 				cfg.ReadTimeout = val
 			}
 		case "writeTimeout":
-			if val, ok := util.ArgLDuration(L, key, v); ok {
+			if val, ok := util.CheckDuration(L, key, v); ok {
 				cfg.WriteTimeout = val
 			}
 		case "idleTimeout":
-			if val, ok := util.ArgLDuration(L, key, v); ok {
+			if val, ok := util.CheckDuration(L, key, v); ok {
 				cfg.IdleTimeout = val
 			}
 		case "processingTimeout":
-			if val, ok := util.ArgLDuration(L, key, v); ok {
+			if val, ok := util.CheckDuration(L, key, v); ok {
 				cfg.ProcessingTimeout = val
 			}
 		case "shutdownTimeout":
-			if val, ok := util.ArgLDuration(L, key, v); ok {
+			if val, ok := util.CheckDuration(L, key, v); ok {
 				cfg.ShutdownTimeout = val
 			}
 		case "workers":
-			if val, ok := util.ArgLInt64(L, key, v); ok {
+			if val, ok := util.CheckInt64(L, key, v); ok {
 				cfg.Workers = val
 			}
 		case "onRequest":
-			if val, ok := util.ArgLFunction(L, key, v); ok {
+			if val, ok := util.CheckFunction(L, key, v); ok {
 				cfg.onRequest = val
 			}
 		case "onError":
-			if val, ok := util.ArgLFunction(L, key, v); ok {
+			if val, ok := util.CheckFunction(L, key, v); ok {
 				cfg.onError = val
 			}
 		case "onSuccess":
-			if val, ok := util.ArgLFunction(L, key, v); ok {
+			if val, ok := util.CheckFunction(L, key, v); ok {
 				cfg.onSuccess = val
 			}
 		case "onShutdown":
-			if val, ok := util.ArgLFunction(L, key, v); ok {
+			if val, ok := util.CheckFunction(L, key, v); ok {
 				cfg.onShutdown = val
 			}
 		case "errorTemplate":
-			if val, ok := util.ArgLString(L, key, v); ok {
+			if val, ok := util.CheckString(L, key, v); ok {
 				cfg.errorTemplate = val
 			}
 		}

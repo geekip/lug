@@ -165,42 +165,42 @@ func (ctx *Context) SetCookie(L *lua.LState) int {
 		switch k {
 
 		case `name`:
-			if val, ok := util.ArgLString(L, k, v); ok {
+			if val, ok := util.CheckString(L, k, v); ok {
 				cookie.Name = val
 			}
 
 		case `value`:
-			if val, ok := util.ArgLString(L, k, v); ok {
+			if val, ok := util.CheckString(L, k, v); ok {
 				cookie.Value = val
 			}
 
 		case `path`:
-			if val, ok := util.ArgLString(L, k, v); ok {
+			if val, ok := util.CheckString(L, k, v); ok {
 				cookie.Path = val
 			}
 
 		case `domain`:
-			if val, ok := util.ArgLString(L, k, v); ok {
+			if val, ok := util.CheckString(L, k, v); ok {
 				cookie.Domain = val
 			}
 
 		case `expires`:
-			if val, ok := util.ArgLTime(L, k, v); ok {
+			if val, ok := util.CheckTime(L, k, v); ok {
 				cookie.Expires = val
 			}
 
 		case `maxAge`:
-			if val, ok := util.ArgLInt(L, k, v); ok {
+			if val, ok := util.CheckInt(L, k, v); ok {
 				cookie.MaxAge = val
 			}
 
 		case `secure`:
-			if val, ok := util.ArgLBool(L, k, v); ok {
+			if val, ok := util.CheckBool(L, k, v); ok {
 				cookie.Secure = val
 			}
 
 		case `httpOnly`:
-			if val, ok := util.ArgLBool(L, k, v); ok {
+			if val, ok := util.CheckBool(L, k, v); ok {
 				cookie.HttpOnly = val
 			}
 
