@@ -49,7 +49,7 @@ func init() {
 
 func serveFile(L *lua.LState, root string, lopts *lua.LTable, ctx *Context) (int, error) {
 
-	dirName := ctx.r.PathValue("path")
+	dirName := ctx.request.URL.Path
 	fullPath := path.Join(root, dirName)
 
 	if !isPathSafe(root, fullPath) {
@@ -72,7 +72,7 @@ func serveFile(L *lua.LState, root string, lopts *lua.LTable, ctx *Context) (int
 		return handleDirectory(fullPath, dirName, file, opts, ctx)
 	}
 
-	ctx.Size = int(info.Size())
+	ctx.size = int(info.Size())
 	writeFile(file, info, ctx)
 	return 200, nil
 }
@@ -92,8 +92,8 @@ func writeFile(file http.File, info fs.FileInfo, ctx *Context) {
 			contentType = "application/octet-stream"
 		}
 	}
-	ctx.w.Header().Set("Content-Type", contentType)
-	http.ServeContent(ctx.w, ctx.r, filename, modTime, file)
+	ctx.response.Header().Set("Content-Type", contentType)
+	http.ServeContent(ctx.response, ctx.request, filename, modTime, file)
 }
 
 func isPathSafe(root, target string) bool {
@@ -131,8 +131,8 @@ func handleDirectory(root, dirName string, file http.File, opts *serveFileOpts, 
 	if opts.autoindex {
 		if file, info := findIndexFile(opts, root); file != nil {
 			defer file.Close()
-			ctx.Size = int(info.Size())
-			http.ServeContent(ctx.w, ctx.r, info.Name(), info.ModTime(), file)
+			ctx.size = int(info.Size())
+			http.ServeContent(ctx.response, ctx.request, info.Name(), info.ModTime(), file)
 			return 0, nil
 		}
 	}
@@ -203,14 +203,14 @@ func dirList(file http.File, dirName string, opts *serveFileOpts, ctx *Context) 
 	}
 
 	if err == nil {
-		size, err = buf.WriteTo(ctx.w)
+		size, err = buf.WriteTo(ctx.response)
 	}
 
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}
 
-	ctx.Size = int(size)
+	ctx.size = int(size)
 
 	return 0, nil
 }

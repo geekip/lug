@@ -1,7 +1,9 @@
 package http
 
 import (
+	"bufio"
 	"lug/pkg"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -10,20 +12,23 @@ import (
 )
 
 type Context struct {
-	w             http.ResponseWriter
-	r             *http.Request
-	Data          *lua.LTable
-	Params        *lua.LTable
 	mu            sync.Mutex
-	StartTime     time.Time
-	StatusCode    int
-	StatusText    string
+	response      http.ResponseWriter
+	request       *http.Request
+	data          *lua.LTable
+	params        *lua.LTable
+	conn          net.Conn
+	bufrw         *bufio.ReadWriter
+	startTime     time.Time
+	statusCode    int
+	statusText    string
 	err           error
-	Size          int
-	ErrorTemplate string
-	Hijacked      bool
-	TimedOut      bool
-	Done          chan struct{}
+	size          int
+	errorTemplate string
+	hijacked      bool
+	timedOut      bool
+	written       bool
+	done          chan struct{}
 }
 
 type errorData struct {
@@ -39,17 +44,22 @@ var contextPool = sync.Pool{
 func newContext(w http.ResponseWriter, r *http.Request) *Context {
 	ctx := contextPool.Get().(*Context)
 
-	ctx.StartTime = time.Now()
-	ctx.w = w
-	ctx.r = r
-	ctx.Done = make(chan struct{})
-	ctx.Data = &lua.LTable{}
-	ctx.Params = &lua.LTable{}
-	ctx.StatusCode = http.StatusOK
-	ctx.StatusText = http.StatusText(http.StatusOK)
-	ctx.Size = 0
-	ctx.Hijacked = false
-	ctx.TimedOut = false
+	ctx.startTime = time.Now()
+	ctx.response = w
+	ctx.request = r
+	ctx.done = make(chan struct{})
+	ctx.data = &lua.LTable{}
+	ctx.params = &lua.LTable{}
+	ctx.statusCode = http.StatusOK
+	ctx.statusText = http.StatusText(http.StatusOK)
+	ctx.err = nil
+	ctx.size = 0
+	ctx.timedOut = false
+	ctx.written = false
+
+	ctx.hijacked = false
+	ctx.conn = nil
+	ctx.bufrw = nil
 
 	w.Header().Set(`Content-Type`, `text/html;charset=utf-8`)
 	w.Header().Set(`Server`, pkg.Name+`/`+pkg.Version)
@@ -57,20 +67,25 @@ func newContext(w http.ResponseWriter, r *http.Request) *Context {
 }
 
 func (ctx *Context) Release() {
-	close(ctx.Done)
-	ctx.StartTime = time.Now()
-	ctx.w = nil
-	ctx.r = nil
-	ctx.Data = nil
-	ctx.Params = nil
-	ctx.StatusCode = 0
-	ctx.StatusText = ""
-	ctx.Size = 0
-	ctx.Hijacked = false
-	ctx.TimedOut = false
+	close(ctx.done)
+	ctx.startTime = time.Now()
+	ctx.response = nil
+	ctx.request = nil
+	ctx.data = nil
+	ctx.params = nil
+	ctx.statusCode = 0
+	ctx.statusText = ""
+	ctx.err = nil
+	ctx.size = 0
+	ctx.timedOut = false
+	ctx.written = false
+
+	ctx.hijacked = false
+	ctx.conn = nil
+	ctx.bufrw = nil
 	contextPool.Put(ctx)
 }
 
 func (ctx *Context) Since() time.Duration {
-	return time.Since(ctx.StartTime)
+	return time.Since(ctx.startTime)
 }

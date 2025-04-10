@@ -1,8 +1,11 @@
 package http
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
+	"sync"
 	"text/template"
 
 	"lug/util"
@@ -10,6 +13,11 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
+var bufPool = sync.Pool{
+	New: func() interface{} { return &bytes.Buffer{} },
+}
+
+// Lua API for the HTTP response context.
 func (ctx *Context) getResponseLuaApi(L *lua.LState) *lua.LTable {
 	methods := util.NewModule(L, util.Methods{
 		"write":     ctx.Write,
@@ -21,66 +29,92 @@ func (ctx *Context) getResponseLuaApi(L *lua.LState) *lua.LTable {
 		"serveFile": ctx.ServeFile,
 		"flush":     ctx.Flush,
 		"error":     ctx.Error,
+		"hijack":    ctx.Hijack,
 	})
 	return methods.Method
 }
 
+// sets the HTTP status code of the response.
 func (ctx *Context) SetStatus(L *lua.LState) int {
-	code, err := L.CheckInt(1), L.OptString(2, "")
-	if ctx.Hijacked || ctx.TimedOut {
-		return 0
-	}
-	if util.CheckStatusCode(code) {
-		ctx.StatusCode = code
-		ctx.StatusText = http.StatusText(code)
-		if err != "" {
-			ctx.err = errors.New(err)
-		} else {
-			ctx.err = nil
-		}
-		ctx.w.WriteHeader(code)
+	if err := ctx.setStatus(L.CheckInt(1)); err != nil {
+		return util.Error(L, err)
 	}
 	return 0
 }
 
-func (ctx *Context) setStatus(code int, err error) {
+func (ctx *Context) setStatus(statusCode int) error {
+
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
-	ctx.StatusCode = code
-	ctx.StatusText = http.StatusText(code)
-	ctx.err = err
+
+	if ctx.written {
+		return errors.New("http: superfluous response.WriteHeader")
+	}
+	if err := ctx.checkHijacked(); err != nil {
+		return err
+	}
+	if !util.CheckStatusCode(statusCode) {
+		return fmt.Errorf("invalid status code: %d", statusCode)
+	}
+
+	ctx.statusCode = statusCode
+	ctx.statusText = http.StatusText(statusCode)
+
+	ctx.response.WriteHeader(statusCode)
+	ctx.written = true
+	return nil
 }
 
 func (ctx *Context) SetHeader(L *lua.LState) int {
-	ctx.w.Header().Set(L.CheckString(1), L.CheckString(2))
+	key, val := L.CheckString(1), L.CheckString(2)
+
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+
+	ctx.response.Header().Set(key, val)
 	return 0
 }
 
 func (ctx *Context) DelHeader(L *lua.LState) int {
-	ctx.w.Header().Del(L.CheckString(1))
+	key := L.CheckString(1)
+
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+
+	ctx.response.Header().Del(key)
 	return 0
 }
 
 func (ctx *Context) Write(L *lua.LState) int {
-	body := L.CheckString(1)
-	var err error
-	var size int
-	if ctx.Hijacked || ctx.TimedOut {
-		err = http.ErrHijacked
-	} else {
-		if ctx.StatusCode == 0 {
-			ctx.setStatus(http.StatusOK, nil)
-		}
-		size, err = ctx.w.Write([]byte(body))
+	if err := ctx.checkHijacked(); err != nil {
+		return util.Error(L, err)
 	}
+	body := L.CheckString(1)
+
+	buf := bufPool.Get().(*bytes.Buffer)
+	defer bufPool.Put(buf)
+
+	buf.Reset()
+	buf.WriteString(body)
+
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+
+	size, err := ctx.response.Write(buf.Bytes())
 	if err != nil {
 		return util.NilError(L, err)
 	}
-	ctx.Size += size
-	return util.Push(L, lua.LNumber(ctx.Size))
+
+	ctx.written = true
+	ctx.size += size
+
+	return util.Push(L, lua.LNumber(ctx.size))
 }
 
 func (ctx *Context) ServeFile(L *lua.LState) int {
+	if err := ctx.checkHijacked(); err != nil {
+		return util.Error(L, err)
+	}
 	root := L.CheckString(1)
 	opts := L.OptTable(2, L.NewTable())
 	if statusCode, err := serveFile(L, root, opts, ctx); err != nil {
@@ -91,18 +125,39 @@ func (ctx *Context) ServeFile(L *lua.LState) int {
 }
 
 func (ctx *Context) Redirect(L *lua.LState) int {
-	url := L.CheckString(1)
-	StatusCode := L.OptInt(2, http.StatusPermanentRedirect)
-	if StatusCode < 300 || StatusCode > 308 {
-		return util.Error(L, errors.New("invalid redirect status code"))
+	if err := ctx.checkHijacked(); err != nil {
+		return util.Error(L, err)
 	}
-	ctx.setStatus(StatusCode, nil)
-	http.Redirect(ctx.w, ctx.r, url, StatusCode)
+
+	url := L.CheckString(1)
+	statusCode := L.OptInt(2, http.StatusPermanentRedirect)
+	// Validate the redirect status code.
+	// http.StatusMultipleChoices 300,http.StatusPermanentRedirect 308
+	if statusCode < 300 || statusCode > 308 {
+		return util.Error(L, errors.New("invalid redirect status code (300-308)"))
+	}
+
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+
+	if ctx.written {
+		return util.Error(L, errors.New("headers already sent"))
+	}
+
+	ctx.statusCode = statusCode
+	ctx.statusText = http.StatusText(statusCode)
+	ctx.written = true
+
+	http.Redirect(ctx.response, ctx.request, url, statusCode)
 	return 0
 }
 
 func (ctx *Context) Flush(L *lua.LState) int {
-	flusher, ok := ctx.w.(http.Flusher)
+	if err := ctx.checkHijacked(); err != nil {
+		return util.Error(L, err)
+	}
+
+	flusher, ok := ctx.response.(http.Flusher)
 	if ok {
 		flusher.Flush()
 	}
@@ -112,49 +167,63 @@ func (ctx *Context) Flush(L *lua.LState) int {
 
 func (ctx *Context) Error(L *lua.LState) int {
 	statusCode := L.CheckInt(1)
-	statusText := L.OptString(2, http.StatusText(statusCode))
-	if !util.CheckStatusCode(statusCode) {
-		return util.Error(L, errors.New("invalid redirect status code"))
+
+	var err error = nil
+	if L.GetTop() > 1 {
+		err = errors.New(L.CheckString(2))
 	}
-	ctx.error(statusCode, errors.New(statusText))
+
+	if e := ctx.error(statusCode, err); e != nil {
+		return util.Error(L, e)
+	}
 	return 0
 }
 
-func (ctx *Context) error(statusCode int, err error) {
+func (ctx *Context) error(statusCode int, err error) error {
 
-	ctx.setStatus(statusCode, err)
-	ctx.w.WriteHeader(statusCode)
-
-	var errStr string
-	if err != nil {
-		errStr = err.Error()
+	if e := ctx.setStatus(statusCode); e != nil {
+		return e
 	}
+
+	// Validate the error status code range.
+	// http.StatusBadRequest 400
+	if statusCode < 400 || statusCode > 599 {
+		return errors.New("http: invalid error status code (range 400–599)")
+	}
+
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
 
 	data := &errorData{
 		StatusCode: statusCode,
-		StatusText: ctx.StatusText,
-		Error:      errStr,
+		StatusText: ctx.statusText,
+		Error:      "",
 	}
+	if err != nil {
+		data.Error = err.Error()
+	}
+	ctx.err = err
 
 	var tpl *template.Template
 	var tplErr error
 
-	if ctx.ErrorTemplate == "" {
+	if ctx.errorTemplate == "" {
 		tpl, tplErr = util.ParseTemplateString(errorTemplate, "LUG_TPL_ERRORPAGE")
 	} else {
-		tpl, tplErr = util.ParseTemplateFiles(ctx.ErrorTemplate)
-	}
-
-	if tplErr == nil {
-		tplErr = tpl.Execute(ctx.w, data)
+		tpl, tplErr = util.ParseTemplateFiles(ctx.errorTemplate)
 	}
 
 	if tplErr != nil {
-		http.Error(ctx.w, ctx.StatusText, statusCode)
+		http.Error(ctx.response, ctx.statusText, statusCode)
+		return tplErr
 	}
 
-	ctx.err = nil
+	if execErr := tpl.Execute(ctx.response, data); execErr != nil {
+		http.Error(ctx.response, ctx.statusText, statusCode)
+		return execErr
+	}
 
+	return nil
 }
 
 func (ctx *Context) SetCookie(L *lua.LState) int {
@@ -163,72 +232,174 @@ func (ctx *Context) SetCookie(L *lua.LState) int {
 	opts.ForEach(func(key, v lua.LValue) {
 		k := key.String()
 		switch k {
-
 		case `name`:
 			if val, ok := util.CheckString(L, k, v); ok {
 				cookie.Name = val
 			}
-
 		case `value`:
 			if val, ok := util.CheckString(L, k, v); ok {
 				cookie.Value = val
 			}
-
 		case `path`:
 			if val, ok := util.CheckString(L, k, v); ok {
 				cookie.Path = val
 			}
-
 		case `domain`:
 			if val, ok := util.CheckString(L, k, v); ok {
 				cookie.Domain = val
 			}
-
 		case `expires`:
 			if val, ok := util.CheckTime(L, k, v); ok {
 				cookie.Expires = val
 			}
-
 		case `maxAge`:
 			if val, ok := util.CheckInt(L, k, v); ok {
 				cookie.MaxAge = val
 			}
-
 		case `secure`:
 			if val, ok := util.CheckBool(L, k, v); ok {
 				cookie.Secure = val
 			}
-
 		case `httpOnly`:
 			if val, ok := util.CheckBool(L, k, v); ok {
 				cookie.HttpOnly = val
 			}
-
 		case `sameSite`:
-			var SameSite http.SameSite
-			switch value := v.(type) {
-			case lua.LNumber:
-				SameSite = http.SameSite(int(value))
-			case lua.LString:
-				switch value.String() {
-				case `lax`:
-					SameSite = http.SameSiteLaxMode
-				case `strict`:
-					SameSite = http.SameSiteStrictMode
-				case `none`:
-					SameSite = http.SameSiteNoneMode
-				default:
-					SameSite = http.SameSiteDefaultMode
-				}
+			sameSite, err := ctx.parseSameSite(v)
+			if err != nil {
+				L.ArgError(1, err.Error())
 			}
-			cookie.SameSite = SameSite
+			cookie.SameSite = sameSite
 
 		default:
 			L.ArgError(1, "unknown cookie field: "+k)
-
 		}
 	})
 
-	http.SetCookie(ctx.w, cookie)
+	http.SetCookie(ctx.response, cookie)
+	return 0
+}
+
+func (ctx *Context) parseSameSite(v lua.LValue) (http.SameSite, error) {
+	switch value := v.(type) {
+	case lua.LNumber:
+		code := int(value)
+		if code < 0 || code > 3 {
+			return 0, errors.New("sameSite number must be 0-3")
+		}
+		return http.SameSite(code), nil
+	case lua.LString:
+		switch value.String() {
+		case "lax":
+			return http.SameSiteLaxMode, nil
+		case "strict":
+			return http.SameSiteStrictMode, nil
+		case "none":
+			return http.SameSiteNoneMode, nil
+		default:
+			return http.SameSiteDefaultMode, nil
+		}
+	default:
+		err := errors.New("sameSite must be number or string")
+		return http.SameSiteDefaultMode, err
+	}
+}
+
+func (ctx *Context) checkHijacked() error {
+	switch {
+	case ctx.hijacked:
+		return errors.New("http: response already hijacked")
+	case ctx.timedOut:
+		return errors.New("http: response processing timeout")
+	default:
+		return nil
+	}
+}
+
+func (ctx *Context) Hijack(L *lua.LState) int {
+
+	if err := ctx.checkHijacked(); err != nil {
+		return util.NilError(L, err)
+	}
+
+	if ctx.written {
+		err := errors.New("http: superfluous response.WriteHeader")
+		return util.NilError(L, err)
+	}
+
+	hiJacker, ok := ctx.response.(http.Hijacker)
+	if !ok {
+		err := errors.New("connection doesn't support hijacking")
+		return util.NilError(L, err)
+	}
+
+	conn, bufrw, err := hiJacker.Hijack()
+	if err != nil {
+		return util.NilError(L, err)
+	}
+
+	ctx.mu.Lock()
+	ctx.hijacked = true
+	ctx.conn = conn
+	ctx.bufrw = bufrw
+	ctx.mu.Unlock()
+
+	hj := util.NewModule(L, util.Methods{
+		"read":  ctx.HjRead,
+		"write": ctx.HjWrite,
+		"close": ctx.HjClose,
+	})
+
+	return hj.Self()
+}
+
+func (ctx *Context) HjRead(L *lua.LState) int {
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+
+	if !ctx.hijacked || ctx.bufrw == nil {
+		return util.NilError(L, errors.New("connection not hijacked"))
+	}
+
+	n := L.OptInt(1, 1024)
+	buf := make([]byte, n)
+
+	size, err := ctx.bufrw.Read(buf)
+	if err != nil {
+		return util.NilError(L, err)
+	}
+
+	return util.Push(L, lua.LString(buf[:size]))
+}
+
+func (ctx *Context) HjWrite(L *lua.LState) int {
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+
+	if !ctx.hijacked || ctx.bufrw == nil {
+		return util.NilError(L, errors.New("connection not hijacked"))
+	}
+
+	data := L.CheckString(1)
+	size, err := ctx.bufrw.WriteString(data)
+	if err != nil {
+		return util.NilError(L, err)
+	}
+	if err := ctx.bufrw.Flush(); err != nil {
+		return util.NilError(L, err)
+	}
+	return util.Push(L, lua.LNumber(size))
+}
+
+func (ctx *Context) HjClose(L *lua.LState) int {
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+
+	if ctx.conn != nil {
+		ctx.conn.Close()
+		// ctx.Hijacked = false
+		ctx.conn = nil
+		ctx.bufrw = nil
+	}
 	return 0
 }

@@ -35,7 +35,8 @@ func Errorf(L *lua.LState, format string, a ...any) int {
 }
 
 func RaiseError(L *lua.LState, err error) int {
-	L.RaiseError(err.Error(), nil)
+	// L.Error(lua.LString(err.Error()), l)
+	L.RaiseError(err.Error())
 	return 0
 }
 

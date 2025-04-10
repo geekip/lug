@@ -3,131 +3,109 @@ package http
 import (
 	"fmt"
 	"log"
-	"net/http"
-	"time"
+	"lug/util"
 
 	lua "github.com/yuin/gopher-lua"
 )
 
 func (s *Server) logger(logType string, args ...interface{}) {
+
+	if len(args) < 1 {
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	L := s.Vm
+	arg := args[0]
 	var callback *lua.LFunction
 	var logMessage string
-	var ok bool
+	var hasMessage bool
 	var luaArgs []lua.LValue
 
 	switch logType {
 	case "error":
-		callback = s.config.onError
-		if len(args) < 1 {
-			return
-		}
 		var err error
-		err, ok = args[0].(error)
-		if !ok {
+		err, hasMessage = arg.(error)
+		if !hasMessage {
 			return
 		}
+		callback = s.config.onError
 		logMessage = err.Error()
 		luaArgs = []lua.LValue{lua.LString(logMessage)}
 
 	case "success":
+		logMessage, hasMessage = arg.(string)
+		if !hasMessage {
+			return
+		}
 		callback = s.config.onSuccess
-		if len(args) < 1 {
-			return
-		}
-		logMessage, ok = args[0].(string)
-		if !ok {
-			return
-		}
 		luaArgs = []lua.LValue{lua.LString(logMessage)}
 
 	case "shutdown":
+		logMessage, hasMessage = arg.(string)
+		if !hasMessage {
+			return
+		}
 		callback = s.config.onShutdown
-		if len(args) < 1 {
-			return
-		}
-		logMessage, ok = args[0].(string)
-		if !ok {
-			return
-		}
 		luaArgs = []lua.LValue{lua.LString(logMessage)}
 
 	case "request":
-		return
+
+		if s.config.logLevel == "silent" {
+			return
+		}
+
+		ctx, hasMessage := arg.(*Context)
+		if !hasMessage {
+			return
+		}
+
+		if s.config.logLevel == "error" && ctx.err == nil {
+			return
+		}
+
 		callback = s.config.onRequest
-		if len(args) < 1 {
-			return
-		}
-		ctx, ok := args[0].(*Context)
-		if !ok {
-			return
-		}
+		w, r := ctx.getResponseLuaApi(L), ctx.getRequestLuaApi(L)
+		luaArgs = []lua.LValue{w, r}
 
 		cip := ctx.getClientIp()
 		tpl := "method: %s, code: %d, path: %s, time: %v, client: %s, server: %s"
 		data := []interface{}{
-			ctx.r.Method,
-			ctx.StatusCode,
-			ctx.r.URL.Path,
+			ctx.request.Method,
+			ctx.statusCode,
+			ctx.request.URL.Path,
 			ctx.Since(),
 			cip,
-			s.config.Addr,
+			s.config.addr,
 		}
 
 		if ctx.err != nil {
-			d := append(data, ctx.err.Error())
-			logMessage = fmt.Sprintf("[error] "+tpl+", (%s)", d...)
+			if s.config.logLevel == "error" {
+				d := append(data, ctx.err.Error())
+				logMessage = fmt.Sprintf("[error] "+tpl+", (%s)", d...)
+			} else {
+				d := append(data, ctx.statusText)
+				logMessage = fmt.Sprintf("[error] "+tpl+", (%s)", d...)
+			}
 		} else {
 			logMessage = fmt.Sprintf("[success] "+tpl, data...)
 		}
 
-		// logMessage = fmt.Sprintf(
-		// 	"%s %d - %s (%v) - %s",
-		// 	ctx.r.Method, ctx.StatusCode, ctx.r.URL.Path, ctx.Since(), ctx.err.Error(),
-		// )
-
-		if ctx.err != nil {
-			// logMessage = ctx.err.Error()
-			if s.config.Debug {
-				ctx.error(ctx.StatusCode, ctx.err)
-			} else {
-				ctx.error(ctx.StatusCode, nil)
-			}
-		}
-
 	default:
-		log.Printf("Unknown log type: %s", logType)
+		log.Printf("logger: unknown log type: %s", logType)
 		return
 	}
 
 	if callback == nil {
 		// util.DebugPrintError(errors.New(logMessage))
+		// L.RaiseError(logMessage)
 		log.Println(logMessage)
 		return
 	}
 
-	L := s.Vm
-
-	if logType == "request" {
-		req := args[0].(*http.Request)
-		statusCode := args[1].(int)
-		duration := args[2].(time.Duration)
-
-		tbl := L.NewTable()
-		L.SetField(tbl, "method", lua.LString(req.Method))
-		L.SetField(tbl, "path", lua.LString(req.URL.Path))
-		L.SetField(tbl, "status", lua.LNumber(statusCode))
-		L.SetField(tbl, "duration_ms", lua.LNumber(duration.Milliseconds()))
-		luaArgs = []lua.LValue{tbl}
-	}
-
-	if err := L.CallByParam(lua.P{
-		Fn:      callback,
-		NRet:    0,
-		Protect: true,
-	}, luaArgs...); err != nil {
-		log.Printf("Lua callback error (%s): %v", logType, err)
+	if err := util.CallLua(L, callback, luaArgs...); err != nil {
+		log.Printf("logger: Lua callback error (%s): %v", logType, err)
 	}
 }
