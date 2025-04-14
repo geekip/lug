@@ -10,7 +10,7 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-func executeArgs(L *lua.LState, optExecute string) (string, string, *lua.LTable, error) {
+func executeArgs(optExecute string) (string, string, *lua.LTable, error) {
 
 	// Get executable path
 	exePath, err := getExePath()
@@ -48,7 +48,7 @@ func executeArgs(L *lua.LState, optExecute string) (string, string, *lua.LTable,
 	hLen := len(hArgs) - 1
 
 	// Get Lua arg table
-	Largs := L.NewTable()
+	Largs := &lua.LTable{}
 	for i, arg := range args {
 		Largs.RawSet(lua.LNumber(i-hLen), lua.LString(arg))
 	}

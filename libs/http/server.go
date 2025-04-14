@@ -24,16 +24,16 @@ import (
 type (
 	Handler *lua.LFunction
 	Server  struct {
-		*util.Module
 		mu          sync.Mutex
 		prefix      string
-		node        *Node
+		route       *Route
 		middlewares []Handler
 		config      *ServerConfig
 		httpServer  *http.Server
 		semaphore   *semaphore.Weighted
 		signalChan  chan os.Signal
 		signalOnce  sync.Once
+		api         *lua.LTable
 	}
 	ServerConfig struct {
 		logLevel          string         // 日志等级
@@ -52,9 +52,10 @@ type (
 		onSuccess         *lua.LFunction // 服务成功
 		onShutdown        *lua.LFunction // 服务关闭
 	}
-	ResError struct {
-		statusCode int
-		err        error
+	Status struct {
+		StatusCode  int
+		StatusText  string
+		StatusError error
 	}
 )
 
@@ -91,24 +92,22 @@ func newServer(L *lua.LState) int {
 		cfg = getServerConfig(L, opts, cfg)
 	}
 
-	server := &Server{
-		Module:     util.NewModule(L),
-		node:       newNode(),
+	instance := &Server{
+		route:      newRoute(),
 		config:     cfg,
 		semaphore:  semaphore.NewWeighted(cfg.workers),
 		signalChan: make(chan os.Signal, 1),
 	}
+	instance.initSignalHandling()
 
-	server.initSignalHandling()
-	methods := extendMethod(server)
-	server.SetMethods(methods, util.Methods{
-		"group":       server.Group,
-		"listen":      server.Listen,
-		"shutdown":    server.Shutdown,
-		"stripPrefix": server.StripPrefix,
+	methods := extendMethod(instance)
+	api := util.SetMethods(L, methods, util.Methods{
+		"group":    instance.Group,
+		"listen":   instance.Listen,
+		"shutdown": instance.Shutdown,
 	})
-
-	return server.Self()
+	instance.api = api
+	return util.Push(L, api)
 }
 
 func (s *Server) initSignalHandling() {
@@ -124,42 +123,56 @@ func (s *Server) Group(L *lua.LState) int {
 	middlewares := append([]Handler{}, s.middlewares...)
 	s.mu.Unlock()
 	group := &Server{
-		Module:      util.NewModule(L),
 		prefix:      s.pathJoin(pattern),
-		node:        s.node,
+		route:       s.route,
 		middlewares: middlewares,
 		config:      s.config,
 	}
-	methods := extendMethod(group)
-	return group.SetMethods(methods).Self()
+	group.api = util.SetMethods(L, extendMethod(group))
+	return util.Push(L, group.api)
 }
 
 // Use adds middleware handlers to the server.
 func (s *Server) Use(L *lua.LState) int {
 	n := L.GetTop()
 	if n == 0 {
-		return s.Self()
+		return util.Push(L, s.api)
 	}
 	middlewares := make([]Handler, 0, n)
 	for i := 1; i <= n; i++ {
-		middlewares[i-1] = L.CheckFunction(i)
+		middlewares = append(middlewares, L.CheckFunction(i))
 	}
 	s.mu.Lock()
 	s.middlewares = append(s.middlewares, middlewares...)
 	s.mu.Unlock()
-	return s.Self()
+	return util.Push(L, s.api)
 }
 
 // registers a handler for a specific HTTP method and path.
 func (s *Server) handle(method string) lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := s.pathJoin(L.CheckString(1))
-		handler := s.applyMiddlewares(L.CheckFunction(2))
+		var stripPrefix string
+		var handler *lua.LFunction
+
+		switch v := L.CheckAny(2).(type) {
+		case *lua.LFunction:
+			handler = v
+		case lua.LString:
+			stripPrefix = v.String()
+			handler = L.CheckFunction(3)
+		default:
+			L.ArgError(2, "must be a string or function")
+		}
+
+		if len(s.middlewares) > 0 {
+			handler = s.applyMiddleware(L, handler)
+		}
 		method = strings.ToUpper(method)
-		if err := s.node.add(method, path, handler); err != nil {
+		if err := s.route.add(method, path, stripPrefix, handler); err != nil {
 			L.RaiseError("failed to add route: %v", err)
 		}
-		return s.Self()
+		return util.Push(L, s.api)
 	}
 }
 
@@ -175,13 +188,21 @@ func (s *Server) Listen(L *lua.LState) int {
 	listener, err := s.getListener(addr)
 	if err != nil {
 		err = fmt.Errorf("server start error: %w", err)
-		s.logger("error", err)
-		L.Push(lua.LString(err.Error()))
-		return 1
+		s.logger(L, "error", err)
+		return util.Error(L, err)
 	}
 
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := newContext(w, r)
+		defer func() {
+			ctx.Release()
+		}()
+		ctx.errorTemplate = s.config.errorTemplate
+		s.ServeHTTP(L, ctx)
+	})
+
 	s.httpServer = &http.Server{
-		Handler:      s,
+		Handler:      handler,
 		Addr:         addr,
 		ReadTimeout:  s.config.readTimeout,
 		WriteTimeout: s.config.writeTimeout,
@@ -191,16 +212,15 @@ func (s *Server) Listen(L *lua.LState) int {
 	go func() {
 		err := s.httpServer.Serve(listener)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			err = fmt.Errorf("server start error: %w", err)
-			s.logger("error", err)
+			s.logger(L, "error", fmt.Errorf("server start error: %w", err))
 		}
 	}()
 
-	s.logger("success", fmt.Sprintf("server started on %v", addr))
+	s.logger(L, "success", fmt.Sprintf("server started on %v", addr))
 
 	// keep the server running until shutdown
 	sig := <-s.signalChan
-	s.shutdown(sig.String())
+	s.shutdown(L, sig.String())
 	return 0
 }
 
@@ -222,15 +242,15 @@ func (s *Server) getListener(addr string) (net.Listener, error) {
 
 // Shutdown initiates the graceful shutdown of the server from Lua.
 func (s *Server) Shutdown(L *lua.LState) int {
-	s.shutdown("")
+	s.shutdown(L, "")
 	return 0
 }
 
 // shutdown initiates the graceful shutdown of the server.
-func (s *Server) shutdown(sig string) {
+func (s *Server) shutdown(L *lua.LState, sig string) {
 
 	if sig != "" {
-		s.logger("shutdown", fmt.Sprintf("received signal: %v", sig))
+		s.logger(L, "shutdown", fmt.Sprintf("received signal: %v", sig))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
@@ -238,18 +258,19 @@ func (s *Server) shutdown(sig string) {
 
 	s.httpServer.SetKeepAlivesEnabled(false)
 	if err := s.httpServer.Close(); err != nil {
-		s.logger("error", fmt.Sprintf("server close error: %v", err))
+		s.logger(L, "error", fmt.Sprintf("server closed error: %v", err))
 		return
 	}
 
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		s.logger("error", fmt.Sprintf("server shutdown error: %v", err))
+		s.logger(L, "error", fmt.Sprintf("server shutdown error: %v", err))
 	} else {
-		s.logger("shutdown", "server stopped gracefully")
+		s.logger(L, "shutdown", "server stopped gracefully")
 	}
 }
 
-func (s *Server) responseLog(ctx *Context, statusCode int, err error) {
+func (s *Server) responseLog(L *lua.LState, ctx *Context, statusCode int, err error) {
+	// fmt.Println(err)
 	if err != nil {
 		if s.config.logLevel == "error" {
 			ctx.error(statusCode, err)
@@ -257,28 +278,12 @@ func (s *Server) responseLog(ctx *Context, statusCode int, err error) {
 			ctx.error(statusCode, nil)
 		}
 	}
-	s.logger("request", ctx)
+	ctx.statusError = err
+	s.logger(L, "request", ctx)
 }
 
 // ServeHTTP handles incoming HTTP requests.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := newContext(w, r)
-	ctx.errorTemplate = s.config.errorTemplate
-
-	defer func() {
-		if rec := recover(); rec != nil {
-			err := fmt.Errorf("panic recovered: %v", rec)
-			s.responseLog(ctx, http.StatusInternalServerError, err)
-		}
-		ctx.Release()
-	}()
-
-	// Acquire semaphore for concurrency control
-	if err := s.semaphore.Acquire(r.Context(), 1); err != nil {
-		s.responseLog(ctx, http.StatusInternalServerError, err)
-		return
-	}
-	defer s.semaphore.Release(1)
+func (s *Server) ServeHTTP(L *lua.LState, ctx *Context) {
 
 	// Request timeout context
 	timeout := s.config.processingTimeout
@@ -286,90 +291,101 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Execute handler asynchronously
-	done := make(chan ResError, 1)
+	done := make(chan *Status, 1)
+
 	go func() {
-		defer close(done)
-		handler, params, statusCode, err := s.node.find(ctx.request)
-		if err == nil {
-			ctx.params = params
-			w, r := ctx.getResponseLuaApi(s.Vm), ctx.getRequestLuaApi(s.Vm)
-			if e := util.CallLua(s.Vm, handler, w, r); e != nil {
-				statusCode = http.StatusInternalServerError
-				err = e
+		defer func() {
+			if rec := recover(); rec != nil {
+				err := fmt.Errorf("panic recovered: %v", rec)
+				done <- &Status{
+					StatusCode:  http.StatusInternalServerError,
+					StatusError: err,
+				}
 			}
+		}()
+
+		// Acquire semaphore for concurrency control
+		if err := s.semaphore.Acquire(timeoutCtx, 1); err != nil {
+			done <- &Status{
+				StatusCode:  http.StatusServiceUnavailable,
+				StatusError: fmt.Errorf("concurrency limit: %w", err),
+			}
+			return
 		}
-		done <- ResError{statusCode: statusCode, err: err}
+		defer s.semaphore.Release(1)
+
+		stripPrefix, handler, params, code, routeErr := s.route.find(ctx.request)
+		if routeErr != nil {
+			done <- &Status{
+				StatusCode:  code,
+				StatusError: routeErr,
+			}
+			return
+		}
+
+		ctx.params = params
+		if stripPrefix != "" {
+			ctx.stripPrefix(stripPrefix)
+		}
+
+		vm := util.VmPool.Clone(L)
+		defer util.VmPool.Put(vm)
+
+		if err := util.CallLua(vm, handler, ctx.luaContext(vm)); err != nil {
+			done <- &Status{
+				StatusCode:  http.StatusInternalServerError,
+				StatusError: fmt.Errorf("lua execution error: %w", err),
+			}
+			return
+		}
+
+		done <- &Status{StatusCode: http.StatusOK}
 	}()
 
 	select {
-	case res := <-done:
-		s.responseLog(ctx, res.statusCode, res.err)
+	case status := <-done:
+		s.responseLog(L, ctx, status.StatusCode, status.StatusError)
 	case <-timeoutCtx.Done():
 		ctx.timedOut = true
 		err := errors.New("request processing timeout")
-		s.responseLog(ctx, http.StatusRequestTimeout, err)
+		s.responseLog(L, ctx, http.StatusRequestTimeout, err)
 	}
-}
-
-// strip a prefix from the request path.
-func (s *Server) StripPrefix(L *lua.LState) int {
-	prefix, handler := L.CheckString(1), L.CheckFunction(2)
-
-	fn := func(l *lua.LState) int {
-		w, r := l.CheckTable(1), l.CheckTable(2)
-
-		path := r.RawGetString("path").String()
-		if strings.HasPrefix(path, prefix) {
-			newPath := strings.TrimPrefix(path, prefix)
-			setPath, _ := r.RawGetString("setPath").(*lua.LFunction)
-			if err := util.CallLua(l, setPath, lua.LString(newPath)); err != nil {
-				l.RaiseError("http.Request setPath failed: %s", err)
-			}
-		}
-
-		if err := util.CallLua(l, handler, w, r); err != nil {
-			l.RaiseError(err.Error())
-		}
-		return 0
-	}
-
-	L.Push(L.NewFunction(fn))
-	return 1
 }
 
 // applies the server-level middlewares to a given handler.
-func (s *Server) applyMiddlewares(handler Handler) Handler {
-	if len(s.middlewares) == 0 {
-		return handler
-	}
-
+func (s *Server) applyMiddleware(L *lua.LState, handler *lua.LFunction) Handler {
 	s.mu.Lock()
-	middlewares := append([]Handler{}, s.middlewares...)
+	count := len(s.middlewares)
+	middlewares := make([]Handler, count)
+	copy(middlewares, s.middlewares)
 	s.mu.Unlock()
 
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		handler = s.wrapMiddleware(middlewares[i], handler)
+	for i := count - 1; i >= 0; i-- {
+		handler = s.wrapMiddleware(L, middlewares[i], handler)
 	}
-
 	return handler
 }
 
-func (s *Server) wrapMiddleware(middleware, next *lua.LFunction) Handler {
-	return s.Vm.NewFunction(func(L *lua.LState) int {
-		w, r := L.CheckTable(1), L.CheckTable(2)
-
-		// Pass the next handler as the third argument
-		nextFn := L.NewFunction(func(l *lua.LState) int {
-			if err := util.CallLua(l, next, w, r); err != nil {
-				L.RaiseError(err.Error())
-			}
-			return 0
-		})
-
-		// Call the middleware, passing the next handler as an argument
-		if err := util.CallLua(L, middleware, w, r, nextFn); err != nil {
-			L.RaiseError(err.Error())
+func (s *Server) wrapMiddleware(L *lua.LState, middleware, next *lua.LFunction) Handler {
+	return L.NewFunction(func(l *lua.LState) int {
+		ctx := l.CheckTable(1)
+		ctx.RawSetString("next", s.wrapNextHandler(l, next, ctx))
+		if err := util.CallLua(l, middleware, ctx); err != nil {
+			l.RaiseError("middleware execution: %v", err)
 		}
+		return 0
+	})
+}
+
+func (s *Server) wrapNextHandler(L *lua.LState, next *lua.LFunction, ctx *lua.LTable) *lua.LFunction {
+	var nextGuard sync.Once
+	return L.NewFunction(func(l *lua.LState) int {
+		nextGuard.Do(func() {
+			ctx.RawSetString("next", lua.LNil)
+			if err := util.CallLua(l, next, ctx); err != nil {
+				l.RaiseError("next handler: %v", err)
+			}
+		})
 		return 0
 	})
 }

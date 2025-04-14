@@ -8,17 +8,15 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type Template struct{ *util.Module }
+type Template struct{}
 
 func TemplateLoader(L *lua.LState) int {
-	mod := &Template{
-		Module: util.NewModule(L),
-	}
-	mod.SetMethods(util.Methods{
-		"files":  mod.executeFiles,
-		"string": mod.executeString,
+	instance := &Template{}
+	api := util.SetMethods(L, util.Methods{
+		"files":  instance.executeFiles,
+		"string": instance.executeString,
 	})
-	return mod.Self()
+	return util.Push(L, api)
 }
 
 func (t *Template) executeFiles(L *lua.LState) int {
@@ -49,9 +47,9 @@ func (t *Template) executeFiles(L *lua.LState) int {
 	}
 
 	if err != nil {
-		return t.NilError(err)
+		return util.NilError(L, err)
 	}
-	return t.executeTemplate(tpl)
+	return t.executeTemplate(L, tpl)
 }
 
 func (t *Template) executeString(L *lua.LState) int {
@@ -59,21 +57,21 @@ func (t *Template) executeString(L *lua.LState) int {
 	key := L.OptString(3, "")
 	tpl, err := util.ParseTemplateString(str, key)
 	if err != nil {
-		return t.NilError(err)
+		return util.NilError(L, err)
 	}
-	return t.executeTemplate(tpl)
+	return t.executeTemplate(L, tpl)
 }
 
-func (t *Template) executeTemplate(tpl *template.Template) int {
+func (t *Template) executeTemplate(L *lua.LState, tpl *template.Template) int {
 	var data interface{}
-	if t.Vm.GetTop() >= 2 {
-		data = util.ToGoValue(t.Vm.CheckTable(2), false)
+	if L.GetTop() >= 2 {
+		data = util.ToGoValue(L.CheckTable(2), false)
 	}
 
 	var buf bytes.Buffer
 	if err := tpl.Execute(&buf, data); err != nil {
 		buf.Reset()
-		return t.NilError(err)
+		return util.NilError(L, err)
 	}
-	return t.Push(lua.LString(buf.String()))
+	return util.Push(L, lua.LString(buf.String()))
 }

@@ -96,22 +96,23 @@ func parsePattern(path string) (_ *pattern, err error) {
 			regex = content[colon+1:]
 		}
 
+		switch {
 		// Validate name
-		if name == "" {
+		case name == "":
 			return nil, errors.New("empty wildcard name")
-		}
-		if !isValidWildcardName(name) {
+
+		case !isValidWildcardName(name):
 			return nil, fmt.Errorf("invalid wildcard name %q", name)
-		}
-		if seenNames[name] {
+
+		case seenNames[name]:
 			return nil, fmt.Errorf("duplicate wildcard name %q", name)
-		}
-		seenNames[name] = true
 
 		// Validate wildcard position
-		if wild && len(rest) > 0 {
+		case wild && len(rest) > 0:
 			return nil, errors.New("{...} wildcard must be the last segment")
 		}
+
+		seenNames[name] = true
 
 		p.segments = append(p.segments, segment{
 			name:   name,

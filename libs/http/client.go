@@ -18,7 +18,6 @@ import (
 )
 
 type client struct {
-	*util.Module
 	config clientConfig
 }
 
@@ -56,23 +55,22 @@ func newClient(L *lua.LState) int {
 		updateClientConfig(L, opts, &cfg)
 	}
 
-	client := &client{
-		Module: util.NewModule(L),
+	instance := &client{
 		config: cfg,
 	}
 
-	client.SetMethods(util.Methods{
-		"connect": client.handle(http.MethodConnect),
-		"delete":  client.handle(http.MethodDelete),
-		"get":     client.handle(http.MethodGet),
-		"head":    client.handle(http.MethodHead),
-		"options": client.handle(http.MethodOptions),
-		"patch":   client.handle(http.MethodPatch),
-		"post":    client.handle(http.MethodPost),
-		"put":     client.handle(http.MethodPut),
-		"trace":   client.handle(http.MethodTrace),
+	api := util.SetMethods(L, util.Methods{
+		"connect": instance.handle(http.MethodConnect),
+		"delete":  instance.handle(http.MethodDelete),
+		"get":     instance.handle(http.MethodGet),
+		"head":    instance.handle(http.MethodHead),
+		"options": instance.handle(http.MethodOptions),
+		"patch":   instance.handle(http.MethodPatch),
+		"post":    instance.handle(http.MethodPost),
+		"put":     instance.handle(http.MethodPut),
+		"trace":   instance.handle(http.MethodTrace),
 	})
-	return client.Self()
+	return util.Push(L, api)
 }
 
 func (c *client) handle(method string) lua.LGFunction {
@@ -87,12 +85,12 @@ func (c *client) handle(method string) lua.LGFunction {
 
 		req, err := c.request(method, url, cfg)
 		if err != nil {
-			return c.NilError(err)
+			return util.NilError(L, err)
 		}
 
-		response, err := c.response(req, cfg)
+		response, err := c.response(L, req, cfg)
 		if err != nil {
-			return c.NilError(err)
+			return util.NilError(L, err)
 		}
 
 		resTable := L.NewTable()
@@ -101,7 +99,7 @@ func (c *client) handle(method string) lua.LGFunction {
 		resTable.RawSetString("body", response.body)
 		resTable.RawSetString("body_size", response.bodySize)
 
-		return c.Push(resTable)
+		return util.Push(L, resTable)
 	}
 }
 
@@ -123,7 +121,7 @@ func (c *client) request(method, url string, cfg clientConfig) (*http.Request, e
 	return request, nil
 }
 
-func (c *client) response(req *http.Request, cfg clientConfig) (*clientResponse, error) {
+func (c *client) response(L *lua.LState, req *http.Request, cfg clientConfig) (*clientResponse, error) {
 
 	transport := &http.Transport{
 		Proxy:           http.ProxyFromEnvironment,
@@ -151,7 +149,7 @@ func (c *client) response(req *http.Request, cfg clientConfig) (*clientResponse,
 
 	response := &clientResponse{
 		status:  lua.LNumber(res.StatusCode),
-		headers: c.Vm.NewTable(),
+		headers: L.NewTable(),
 	}
 
 	for key, values := range res.Header {

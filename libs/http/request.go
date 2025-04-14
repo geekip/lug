@@ -11,48 +11,37 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-func (ctx *Context) getRequestLuaApi(L *lua.LState) *lua.LTable {
-	r := ctx.request
-	methods := util.NewModule(L, util.Methods{
-		"params":        ctx.params,
-		"method":        lua.LString(r.Method),
-		"host":          lua.LString(r.Host),
-		"proto":         lua.LString(r.Proto),
-		"path":          lua.LString(r.URL.Path),
-		"referer":       lua.LString(r.Referer()),
-		"userAgent":     lua.LString(r.UserAgent()),
-		"rawPath":       lua.LString(r.URL.RawPath),
-		"rawQuery":      lua.LString(r.URL.RawQuery),
-		"requestUri":    lua.LString(r.RequestURI),
-		"remoteAddr":    lua.LString(r.RemoteAddr),
-		"getQuery":      ctx.GetQuery,
-		"getHeader":     ctx.GetHeader,
-		"getCookie":     ctx.GetCookie,
-		"getCookies":    ctx.GetCookies,
-		"getBody":       ctx.GetBody,
-		"getClientIp":   ctx.GetClientIp,
-		"basicAuth":     ctx.BasicAuth,
-		"postForm":      ctx.PostForm,
-		"getData":       ctx.Get,
-		"setData":       ctx.Set,
-		"getPathValue":  ctx.GetPathValue,
-		"setPathValues": ctx.SetPathValue,
-		"getScheme":     ctx.GetScheme,
-		"setPath":       ctx.SetPath,
-		"getPath":       ctx.GetPath,
-	})
-	return methods.Method
+func (req *Context) Referer(L *lua.LState) int {
+	return util.Push(L, lua.LString(req.request.Referer()))
+}
+
+func (req *Context) UserAgent(L *lua.LState) int {
+	return util.Push(L, lua.LString(req.request.UserAgent()))
+}
+
+func (ctx *Context) Set(L *lua.LState) int {
+	key, val := L.CheckString(1), L.CheckAny(2)
+	if strings.TrimSpace(key) == "" {
+		L.ArgError(1, "key cannot be empty")
+	}
+	ctx.data.RawSetString(key, val)
+	return 0
+}
+
+func (ctx *Context) Get(L *lua.LState) int {
+	key := L.CheckString(1)
+	if strings.TrimSpace(key) == "" {
+		L.ArgError(1, "key cannot be empty")
+	}
+	return util.Push(L, ctx.data.RawGetString(key))
 }
 
 func (req *Context) GetHeader(L *lua.LState) int {
-	key := L.CheckString(1)
-	L.Push(lua.LString(req.request.Header.Get(key)))
-	return 1
+	return util.Push(L, lua.LString(req.request.Header.Get(L.CheckString(1))))
 }
 
 func (ctx *Context) GetPath(L *lua.LState) int {
-	L.Push(lua.LString(ctx.request.URL.Path))
-	return 1
+	return util.Push(L, lua.LString(ctx.request.URL.Path))
 }
 
 func (ctx *Context) SetPath(L *lua.LState) int {
@@ -60,32 +49,32 @@ func (ctx *Context) SetPath(L *lua.LState) int {
 	return 0
 }
 
-func (ctx *Context) GetPathValue(L *lua.LState) int {
-	key := L.CheckString(1)
-	L.Push(lua.LString(ctx.request.PathValue(key)))
-	return 1
-}
-
-func (ctx *Context) SetPathValue(L *lua.LState) int {
-	key, val := L.CheckString(1), L.CheckString(2)
-	ctx.request.SetPathValue(key, val)
-	return 0
+func (ctx *Context) stripPrefix(prefix string) {
+	if prefix == "" {
+		return
+	}
+	path := ctx.request.URL.Path
+	if strings.HasPrefix(path, prefix) {
+		newPath := strings.TrimPrefix(path, prefix)
+		if newPath == "" {
+			newPath = "/"
+		}
+		ctx.request.URL.Path = newPath
+		ctx.stripPath = newPath
+	}
 }
 
 func (ctx *Context) GetQuery(L *lua.LState) int {
-	key := L.CheckString(1)
-	L.Push(lua.LString(ctx.request.URL.Query().Get(key)))
-	return 1
+	return util.Push(L, lua.LString(ctx.request.URL.Query().Get(L.CheckString(1))))
 }
 
 func (ctx *Context) BasicAuth(L *lua.LState) int {
 	u, p := L.CheckString(1), L.CheckString(2)
-	if user, pass, ok := ctx.request.BasicAuth(); !ok || user != u || pass != p {
-		L.Push(lua.LFalse)
-	} else {
-		L.Push(lua.LTrue)
+	user, pass, ok := ctx.request.BasicAuth()
+	if !ok || user != u || pass != p {
+		return util.Push(L, lua.LFalse)
 	}
-	return 1
+	return util.Push(L, lua.LTrue)
 }
 
 func (ctx *Context) GetBody(L *lua.LState) int {
@@ -108,33 +97,24 @@ func (ctx *Context) PostForm(L *lua.LState) int {
 			lform.RawSetString(key, lua.LString(values[0]))
 		}
 	}
-	L.Push(lform)
-	return 1
+	return util.Push(L, lform)
 }
 
-func (ctx *Context) GetClientIp(L *lua.LState) int {
-	cip := ctx.getClientIp()
-	L.Push(lua.LString(cip))
-	return 1
+func (ctx *Context) RemoteIP(L *lua.LState) int {
+	return util.Push(L, lua.LString(ctx.remoteIP()))
 }
 
-func (ctx *Context) getClientIp() string {
-	var cip string
+func (ctx *Context) remoteIP() string {
 	if ip := ctx.request.Header.Get("X-Forwarded-For"); ip != "" {
-		if ips := strings.Split(ip, ","); len(ips) > 0 {
-			cip = strings.TrimSpace(ips[0])
-		}
-	} else if ip := ctx.request.Header.Get("X-Real-IP"); ip != "" {
-		cip = ip
-	} else {
-		host, _, err := net.SplitHostPort(ctx.request.RemoteAddr)
-		if err == nil {
-			cip = host
-		} else {
-			cip = ctx.request.RemoteAddr
-		}
+		return strings.TrimSpace(strings.Split(ip, ",")[0])
 	}
-	return cip
+	if ip := ctx.request.Header.Get("X-Real-IP"); ip != "" {
+		return ip
+	}
+	if host, _, err := net.SplitHostPort(ctx.request.RemoteAddr); err == nil {
+		return host
+	}
+	return ctx.request.RemoteAddr
 }
 
 func (ctx *Context) transformCookie(L *lua.LState, cookie *http.Cookie) *lua.LTable {
@@ -163,13 +143,11 @@ func (ctx *Context) transformCookie(L *lua.LState, cookie *http.Cookie) *lua.LTa
 }
 
 func (ctx *Context) GetCookie(L *lua.LState) int {
-	key := L.CheckString(1)
-	cookie, err := ctx.request.Cookie(key)
+	cookie, err := ctx.request.Cookie(L.CheckString(1))
 	if err != nil {
 		return util.NilError(L, err)
 	}
-	L.Push(ctx.transformCookie(L, cookie))
-	return 1
+	return util.Push(L, ctx.transformCookie(L, cookie))
 }
 
 func (ctx *Context) GetCookies(L *lua.LState) int {
@@ -178,31 +156,11 @@ func (ctx *Context) GetCookies(L *lua.LState) int {
 	for _, v := range cookies {
 		lcookies.RawSetString(v.Name, ctx.transformCookie(L, v))
 	}
-	L.Push(lcookies)
-	return 1
-}
-
-func (ctx *Context) Set(L *lua.LState) int {
-	key, val := L.CheckString(1), L.CheckAny(2)
-	if strings.TrimSpace(key) == "" {
-		L.ArgError(1, "key cannot be empty")
-	}
-	ctx.data.RawSetString(key, val)
-	return 0
-}
-
-func (ctx *Context) Get(L *lua.LState) int {
-	key := L.CheckString(1)
-	if strings.TrimSpace(key) == "" {
-		L.ArgError(1, "key cannot be empty")
-	}
-	L.Push(ctx.data.RawGetString(key))
-	return 1
+	return util.Push(L, lcookies)
 }
 
 func (ctx *Context) GetScheme(L *lua.LState) int {
-	L.Push(lua.LString(ctx.getScheme()))
-	return 1
+	return util.Push(L, lua.LString(ctx.getScheme()))
 }
 
 func (ctx *Context) getScheme() string {

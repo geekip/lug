@@ -12,7 +12,6 @@ import (
 )
 
 type Sql struct {
-	*util.Module
 	sql     *SQL
 	tx      *sql.Tx
 	table   string
@@ -24,6 +23,7 @@ type Sql struct {
 	limit   int
 	offset  int
 	args    []interface{}
+	api     *lua.LTable
 }
 
 func (s *Sql) resetConditional() {
@@ -39,10 +39,10 @@ func (s *Sql) resetConditional() {
 }
 
 func Loader(L *lua.LState) int {
-	mod := util.NewModule(L, util.Methods{
+	api := util.SetMethods(L, util.Methods{
 		"open": open,
 	})
-	return mod.Self()
+	return util.Push(L, api)
 }
 
 func extendMethods(s *Sql) util.Methods {
@@ -73,17 +73,16 @@ func open(L *lua.LState) int {
 		return util.NilError(L, err)
 	}
 
-	mod := &Sql{
-		Module: util.NewModule(L),
-		sql:    db,
+	instance := &Sql{
+		sql: db,
 	}
 
-	mod.SetMethods(extendMethods(mod), util.Methods{
-		"transaction": mod.Transaction,
-		"close":       mod.Close,
+	api := util.SetMethods(L, extendMethods(instance), util.Methods{
+		"transaction": instance.Transaction,
+		"close":       instance.Close,
 	})
-
-	return mod.Self()
+	instance.api = api
+	return util.Push(L, api)
 }
 
 func (s *Sql) Transaction(L *lua.LState) int {
@@ -93,7 +92,7 @@ func (s *Sql) Transaction(L *lua.LState) int {
 
 	tx, err := s.sql.instance.BeginTx(ctx, config.options)
 	if err != nil {
-		return s.Error(err)
+		return util.Error(L, err)
 	}
 
 	defer func() {
@@ -107,46 +106,48 @@ func (s *Sql) Transaction(L *lua.LState) int {
 		}
 	}()
 
-	mod := &Sql{
-		Module: util.NewModule(L),
-		tx:     tx,
-		sql:    s.sql,
+	instance := &Sql{
+		tx:  tx,
+		sql: s.sql,
 	}
-	mod.SetMethods(extendMethods(mod), util.Methods{
-		"rollback": mod.Rollback,
-		"commit":   mod.Commit,
-	})
 
-	if err := util.CallLua(L, config.callback, mod.Method); err != nil {
-		return mod.Error(err)
+	methods := extendMethods(instance)
+	api := util.SetMethods(L, methods, util.Methods{
+		"rollback": instance.Rollback,
+		"commit":   instance.Commit,
+	})
+	instance.api = api
+
+	if err := util.CallLua(L, config.callback, api); err != nil {
+		return util.Error(L, err)
 	}
 	return 0
 }
 
 func (s *Sql) Rollback(L *lua.LState) int {
 	if err := s.tx.Rollback(); err != nil {
-		return s.Error(err)
+		return util.Error(L, err)
 	}
 	return 0
 }
 
 func (s *Sql) Commit(L *lua.LState) int {
 	if err := s.tx.Commit(); err != nil {
-		return s.Error(err)
+		return util.Error(L, err)
 	}
 	return 0
 }
 
 func (s *Sql) Close(L *lua.LState) int {
 	if err := s.sql.close(); err != nil {
-		return s.Error(err)
+		return util.Error(L, err)
 	}
 	return 0
 }
 
 func (s *Sql) Table(L *lua.LState) int {
 	s.table = L.CheckString(1)
-	return s.Self()
+	return util.Push(L, s.api)
 }
 
 func (s *Sql) Fields(L *lua.LState) int {
@@ -156,68 +157,68 @@ func (s *Sql) Fields(L *lua.LState) int {
 		fields = append(fields, L.CheckString(i))
 	}
 	s.fields = strings.Join(fields, ",")
-	return s.Self()
+	return util.Push(L, s.api)
 }
 
 func (s *Sql) Where(L *lua.LState) int {
-	query, args := s.getNativeQuery()
+	query, args := s.getNativeQuery(L)
 	s.where = query
 	s.args = append(s.args, args...)
-	return s.Self()
+	return util.Push(L, s.api)
 }
 
 func (s *Sql) Group(L *lua.LState) int {
 	s.groupBy = L.CheckString(1)
-	return s.Self()
+	return util.Push(L, s.api)
 }
 
 func (s *Sql) Having(L *lua.LState) int {
 	s.having = L.CheckString(1)
-	return s.Self()
+	return util.Push(L, s.api)
 }
 
 func (s *Sql) Order(L *lua.LState) int {
 	s.orderBy = L.CheckString(1)
-	return s.Self()
+	return util.Push(L, s.api)
 }
 
 func (s *Sql) Limit(L *lua.LState) int {
 	s.limit = L.CheckInt(1)
-	return s.Self()
+	return util.Push(L, s.api)
 }
 
 func (s *Sql) Offset(L *lua.LState) int {
 	s.offset = L.CheckInt(1)
-	return s.Self()
+	return util.Push(L, s.api)
 }
 
 func (s *Sql) Query(L *lua.LState) int {
-	query, args := s.getNativeQuery()
-	return s.query(query, args, true)
+	query, args := s.getNativeQuery(L)
+	return s.query(L, query, args, true)
 }
 
 func (s *Sql) FetchAll(L *lua.LState) int {
 	query, args := s.getConditionalQuery()
-	return s.query(query, args, true)
+	return s.query(L, query, args, true)
 }
 
 func (s *Sql) Fetch(L *lua.LState) int {
 	s.limit = 1
 	s.offset = 0
 	query, args := s.getConditionalQuery()
-	return s.query(query, args, false)
+	return s.query(L, query, args, false)
 }
 
 func (s *Sql) Exec(L *lua.LState) int {
-	query, args := s.getNativeQuery()
-	return s.exec(query, args)
+	query, args := s.getNativeQuery(L)
+	return s.exec(L, query, args)
 }
 
 func (s *Sql) Insert(L *lua.LState) int {
 	if err := s.checkTable("insert"); err != nil {
-		return s.NilError(err)
+		return util.NilError(L, err)
 	}
-	columns, values := s.processTableData()
+	columns, values := s.processTableData(L)
 	placeholders := make([]string, len(columns))
 	for i := 0; i < len(columns); i++ {
 		placeholders[i] = "?"
@@ -227,17 +228,17 @@ func (s *Sql) Insert(L *lua.LState) int {
 		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "),
 	)
-	return s.exec(query, values)
+	return s.exec(L, query, values)
 }
 
 func (s *Sql) Update(L *lua.LState) int {
 	if err := s.checkTable("update"); err != nil {
-		return s.NilError(err)
+		return util.NilError(L, err)
 	}
 	if err := s.checkWhere("update"); err != nil {
-		return s.NilError(err)
+		return util.NilError(L, err)
 	}
-	columns, values := s.processTableData()
+	columns, values := s.processTableData(L)
 	sets := make([]string, len(columns))
 	for i, col := range columns {
 		sets[i] = fmt.Sprintf("%s = ?", col)
@@ -248,11 +249,11 @@ func (s *Sql) Update(L *lua.LState) int {
 		strings.Join(sets, ", "),
 		s.where,
 	)
-	return s.exec(query, values)
+	return s.exec(L, query, values)
 }
 
-func (s *Sql) processTableData() (columns []string, values []interface{}) {
-	s.Vm.CheckTable(1).ForEach(func(lk, lv lua.LValue) {
+func (s *Sql) processTableData(L *lua.LState) (columns []string, values []interface{}) {
+	L.CheckTable(1).ForEach(func(lk, lv lua.LValue) {
 		columns = append(columns, lk.String())
 		values = append(values, lv)
 	})
@@ -261,13 +262,13 @@ func (s *Sql) processTableData() (columns []string, values []interface{}) {
 
 func (s *Sql) Delete(L *lua.LState) int {
 	if err := s.checkTable("delete"); err != nil {
-		return s.NilError(err)
+		return util.NilError(L, err)
 	}
 	if err := s.checkWhere("delete"); err != nil {
-		return s.NilError(err)
+		return util.NilError(L, err)
 	}
 	query := fmt.Sprintf("DELETE FROM %s WHERE %s", s.table, s.where)
-	return s.exec(query, s.args)
+	return s.exec(L, query, s.args)
 }
 
 func (s *Sql) Count(L *lua.LState) int {
@@ -285,12 +286,12 @@ func (s *Sql) Count(L *lua.LState) int {
 
 	var count int64
 	if err := row.Scan(&count); err != nil {
-		return s.NilError(err)
+		return util.NilError(L, err)
 	}
-	return s.Push(lua.LNumber(count))
+	return util.Push(L, lua.LNumber(count))
 }
 
-func (s *Sql) exec(query string, args []interface{}) int {
+func (s *Sql) exec(L *lua.LState, query string, args []interface{}) int {
 	var result sql.Result
 	var err error
 	if s.tx != nil {
@@ -299,23 +300,23 @@ func (s *Sql) exec(query string, args []interface{}) int {
 		result, err = s.sql.instance.Exec(query, args...)
 	}
 	if err != nil {
-		return s.NilError(err)
+		return util.NilError(L, err)
 	}
 	LastInsertId, err := result.LastInsertId()
 	if err != nil {
-		return s.NilError(err)
+		return util.NilError(L, err)
 	}
 	RowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return s.NilError(err)
+		return util.NilError(L, err)
 	}
-	rTable := s.Vm.NewTable()
+	rTable := L.NewTable()
 	rTable.RawSetString("lastInsertId", lua.LNumber(LastInsertId))
 	rTable.RawSetString("rowsAffected", lua.LNumber(RowsAffected))
-	return s.Push(rTable)
+	return util.Push(L, rTable)
 }
 
-func (s *Sql) query(query string, args []interface{}, isRows bool) int {
+func (s *Sql) query(L *lua.LState, query string, args []interface{}, isRows bool) int {
 	var rows *sql.Rows
 	var err error
 	if s.tx != nil {
@@ -324,22 +325,22 @@ func (s *Sql) query(query string, args []interface{}, isRows bool) int {
 		rows, err = s.sql.instance.Query(query, args...)
 	}
 	if err != nil {
-		return s.NilError(err)
+		return util.NilError(L, err)
 	}
 	defer rows.Close()
 
-	lrows, err := s.parseRows(rows, isRows)
+	lrows, err := s.parseRows(L, rows, isRows)
 	if err != nil {
-		return s.NilError(err)
+		return util.NilError(L, err)
 	}
-	return s.Push(lrows)
+	return util.Push(L, lrows)
 }
 
-func (s *Sql) parseRows(rows *sql.Rows, isRows bool) (*lua.LTable, error) {
-	lRows := s.Vm.NewTable()
+func (s *Sql) parseRows(L *lua.LState, rows *sql.Rows, isRows bool) (*lua.LTable, error) {
+	lRows := L.NewTable()
 	if isRows {
 		for rows.Next() {
-			rowTable, err := s.makeRow(rows)
+			rowTable, err := s.makeRow(L, rows)
 			if err != nil {
 				return nil, err
 			}
@@ -349,7 +350,7 @@ func (s *Sql) parseRows(rows *sql.Rows, isRows bool) (*lua.LTable, error) {
 		if !rows.Next() {
 			return nil, sql.ErrNoRows
 		}
-		rowTable, err := s.makeRow(rows)
+		rowTable, err := s.makeRow(L, rows)
 		if err != nil {
 			return nil, err
 		}
@@ -358,7 +359,7 @@ func (s *Sql) parseRows(rows *sql.Rows, isRows bool) (*lua.LTable, error) {
 	return lRows, nil
 }
 
-func (s *Sql) makeRow(rows *sql.Rows) (*lua.LTable, error) {
+func (s *Sql) makeRow(L *lua.LState, rows *sql.Rows) (*lua.LTable, error) {
 	columns, err := rows.Columns()
 	if err != nil {
 		return nil, err
@@ -373,8 +374,7 @@ func (s *Sql) makeRow(rows *sql.Rows) (*lua.LTable, error) {
 		return nil, err
 	}
 
-	// lColumns := s.Vm.CreateTable(clen, 1)
-	lRows := s.Vm.CreateTable(0, clen)
+	lRows := L.CreateTable(0, clen)
 
 	for i, col := range columns {
 		val := values[i]
@@ -388,11 +388,11 @@ func (s *Sql) makeRow(rows *sql.Rows) (*lua.LTable, error) {
 	return lRows, nil
 }
 
-func (s *Sql) getNativeQuery() (string, []interface{}) {
-	query := s.Vm.CheckString(1)
+func (s *Sql) getNativeQuery(L *lua.LState) (string, []interface{}) {
+	query := L.CheckString(1)
 	var args []interface{}
-	for i := 2; i <= s.Vm.GetTop(); i++ {
-		args = append(args, s.Vm.CheckAny(i))
+	for i := 2; i <= L.GetTop(); i++ {
+		args = append(args, L.CheckAny(i))
 	}
 	return query, args
 }

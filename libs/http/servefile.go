@@ -48,9 +48,10 @@ func init() {
 }
 
 func serveFile(L *lua.LState, root string, lopts *lua.LTable, ctx *Context) (int, error) {
-
-	dirName := ctx.request.URL.Path
-	fullPath := path.Join(root, dirName)
+	fullPath, dirName := root, ctx.stripPath
+	if dirName != "" {
+		fullPath = path.Join(fullPath, dirName)
+	}
 
 	if !isPathSafe(root, fullPath) {
 		return http.StatusForbidden, errors.New("path traversal attempt detected")
@@ -74,7 +75,8 @@ func serveFile(L *lua.LState, root string, lopts *lua.LTable, ctx *Context) (int
 
 	ctx.size = int(info.Size())
 	writeFile(file, info, ctx)
-	return 200, nil
+
+	return http.StatusOK, nil
 }
 
 func writeFile(file http.File, info fs.FileInfo, ctx *Context) {

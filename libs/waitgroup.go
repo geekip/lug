@@ -10,27 +10,27 @@ import (
 )
 
 type waitGroup struct {
-	*util.Module
-	wg *sync.WaitGroup
+	wg  *sync.WaitGroup
+	api *lua.LTable
 }
 
 func WaitGroupLoader(L *lua.LState) int {
-	mod := util.NewModule(L, util.Methods{
+	api := util.SetMethods(L, util.Methods{
 		"new": newWaitGroup,
 	})
-	return mod.Self()
+	return util.Push(L, api)
 }
 
 func newWaitGroup(L *lua.LState) int {
-	mod := &waitGroup{
-		Module: util.NewModule(L),
-		wg:     &sync.WaitGroup{},
+	instance := &waitGroup{
+		wg: &sync.WaitGroup{},
 	}
-	mod.SetMethods(util.Methods{
-		"wait": mod.wait,
-		"go":   mod.Go,
+	api := util.SetMethods(L, util.Methods{
+		"wait": instance.wait,
+		"go":   instance.Go,
 	})
-	return mod.Self()
+	instance.api = api
+	return util.Push(L, api)
 }
 
 func (m *waitGroup) Go(L *lua.LState) int {
@@ -40,7 +40,7 @@ func (m *waitGroup) Go(L *lua.LState) int {
 	go func() {
 		defer m.wg.Done()
 
-		vm := util.VmPool.Get()
+		vm := util.VmPool.Clone(L)
 		defer util.VmPool.Put(vm)
 
 		if err := util.CallLua(vm, callback); err != nil {
@@ -48,10 +48,10 @@ func (m *waitGroup) Go(L *lua.LState) int {
 			return
 		}
 	}()
-	return m.Self()
+	return util.Push(L, m.api)
 }
 
 func (m *waitGroup) wait(L *lua.LState) int {
 	m.wg.Wait()
-	return m.Self()
+	return util.Push(L, m.api)
 }

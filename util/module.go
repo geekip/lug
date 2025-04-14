@@ -6,59 +6,65 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type (
-	Methods map[string]interface{}
-	Module  struct {
-		Method *lua.LTable
-		Vm     *lua.LState
-	}
-)
+type Methods map[string]interface{}
 
-func NewModule(L *lua.LState, methods ...Methods) *Module {
-	mod := &Module{
-		Method: L.NewTable(),
-		Vm:     L,
-	}
-	return mod.SetMethods(methods...)
-}
-
-func (m *Module) SetMethods(methods ...Methods) *Module {
-	if len(methods) == 0 {
-		return m
-	}
-	m.Method = SetMethods(m.Vm, m.Method, methods...)
-	return m
-}
-
-func (m *Module) Self(args ...lua.LValue) int {
-	m.Vm.Push(m.Method)
-	return m.Push(args...) + 1
-}
-
-func (m *Module) Push(args ...lua.LValue) int {
+func Push(L *lua.LState, args ...lua.LValue) int {
 	Len := len(args)
 	for i := 0; i < Len; i++ {
-		m.Vm.Push(args[i])
+		L.Push(args[i])
 	}
 	return Len
 }
 
-func (m *Module) NilError(err error) int {
-	m.Vm.Push(lua.LNil)
-	return m.Error(err) + 1
+func NilError(L *lua.LState, err error) int {
+	L.Push(lua.LNil)
+	return Error(L, err) + 1
 }
 
-func (m *Module) Error(err error) int {
-	m.Vm.Push(lua.LString(err.Error()))
+func Error(L *lua.LState, err error) int {
+	L.Push(lua.LString(err.Error()))
 	return 1
 }
 
-func (m *Module) Errorf(format string, a ...any) int {
+func Errorf(L *lua.LState, format string, a ...any) int {
 	err := fmt.Errorf(format, a...)
-	return m.Error(err)
+	return Error(L, err)
 }
 
-func (m *Module) RaiseError(err error) int {
-	m.Vm.RaiseError(err.Error(), nil)
+func RaiseError(L *lua.LState, err error) int {
+	L.RaiseError(err.Error())
 	return 0
+}
+
+func SetMethods(L *lua.LState, methods ...Methods) *lua.LTable {
+	table := L.NewTable()
+	if len(methods) == 0 {
+		return table
+	}
+	for i := 0; i < len(methods); i++ {
+		for key, val := range methods[i] {
+			switch v := val.(type) {
+			case lua.LGFunction:
+				table.RawSetString(key, L.NewClosure(v))
+			case func(*lua.LState) int:
+				table.RawSetString(key, L.NewClosure(v))
+			case lua.LValue:
+				table.RawSetString(key, v)
+			default:
+				lv := ToLuaValue(v)
+				table.RawSetString(key, lv)
+				if lv == lua.LNil {
+					err := fmt.Errorf("unsupported method type: %s", key)
+					DebugPrintError(err)
+				}
+			}
+		}
+	}
+	return table
+}
+
+func CallLua(L *lua.LState, callback *lua.LFunction, args ...lua.LValue) error {
+	L.Push(callback)
+	alen := Push(L, args...)
+	return L.PCall(alen, lua.MultRet, nil)
 }

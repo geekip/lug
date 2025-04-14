@@ -17,23 +17,6 @@ var bufPool = sync.Pool{
 	New: func() interface{} { return &bytes.Buffer{} },
 }
 
-// Lua API for the HTTP response context.
-func (ctx *Context) getResponseLuaApi(L *lua.LState) *lua.LTable {
-	methods := util.NewModule(L, util.Methods{
-		"write":     ctx.Write,
-		"setStatus": ctx.SetStatus,
-		"setHeader": ctx.SetHeader,
-		"delHeader": ctx.DelHeader,
-		"setCookie": ctx.SetCookie,
-		"redirect":  ctx.Redirect,
-		"serveFile": ctx.ServeFile,
-		"flush":     ctx.Flush,
-		"error":     ctx.Error,
-		"hijack":    ctx.Hijack,
-	})
-	return methods.Method
-}
-
 // sets the HTTP status code of the response.
 func (ctx *Context) SetStatus(L *lua.LState) int {
 	if err := ctx.setStatus(L.CheckInt(1)); err != nil {
@@ -137,12 +120,12 @@ func (ctx *Context) Redirect(L *lua.LState) int {
 		return util.Error(L, errors.New("invalid redirect status code (300-308)"))
 	}
 
+	if ctx.written {
+		return util.Error(L, errors.New("http: superfluous response.WriteHeader"))
+	}
+
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
-
-	if ctx.written {
-		return util.Error(L, errors.New("headers already sent"))
-	}
 
 	ctx.statusCode = statusCode
 	ctx.statusText = http.StatusText(statusCode)
@@ -161,8 +144,7 @@ func (ctx *Context) Flush(L *lua.LState) int {
 	if ok {
 		flusher.Flush()
 	}
-	L.Push(lua.LBool(ok))
-	return 1
+	return util.Push(L, lua.LBool(ok))
 }
 
 func (ctx *Context) Error(L *lua.LState) int {
@@ -180,13 +162,10 @@ func (ctx *Context) Error(L *lua.LState) int {
 }
 
 func (ctx *Context) error(statusCode int, err error) error {
-
 	if e := ctx.setStatus(statusCode); e != nil {
 		return e
 	}
 
-	// Validate the error status code range.
-	// http.StatusBadRequest 400
 	if statusCode < 400 || statusCode > 599 {
 		return errors.New("http: invalid error status code (range 400–599)")
 	}
@@ -194,15 +173,7 @@ func (ctx *Context) error(statusCode int, err error) error {
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 
-	data := &errorData{
-		StatusCode: statusCode,
-		StatusText: ctx.statusText,
-		Error:      "",
-	}
-	if err != nil {
-		data.Error = err.Error()
-	}
-	ctx.err = err
+	ctx.statusError = err
 
 	var tpl *template.Template
 	var tplErr error
@@ -218,7 +189,13 @@ func (ctx *Context) error(statusCode int, err error) error {
 		return tplErr
 	}
 
-	if execErr := tpl.Execute(ctx.response, data); execErr != nil {
+	status := &Status{
+		StatusCode:  statusCode,
+		StatusText:  ctx.statusText,
+		StatusError: err,
+	}
+
+	if execErr := tpl.Execute(ctx.response, status); execErr != nil {
 		http.Error(ctx.response, ctx.statusText, statusCode)
 		return execErr
 	}
@@ -285,7 +262,7 @@ func (ctx *Context) parseSameSite(v lua.LValue) (http.SameSite, error) {
 	case lua.LNumber:
 		code := int(value)
 		if code < 0 || code > 3 {
-			return 0, errors.New("sameSite number must be 0-3")
+			return 0, errors.New("invalid error sameSite (range 0-3)")
 		}
 		return http.SameSite(code), nil
 	case lua.LString:
@@ -303,6 +280,16 @@ func (ctx *Context) parseSameSite(v lua.LValue) (http.SameSite, error) {
 		err := errors.New("sameSite must be number or string")
 		return http.SameSiteDefaultMode, err
 	}
+}
+
+func (ctx *Context) DelCookie(L *lua.LState) int {
+	cookie, err := ctx.request.Cookie(L.CheckString(1))
+	if err != nil {
+		return util.Error(L, err)
+	}
+	cookie.MaxAge = -1
+	http.SetCookie(ctx.response, cookie)
+	return 0
 }
 
 func (ctx *Context) checkHijacked() error {
@@ -344,13 +331,13 @@ func (ctx *Context) Hijack(L *lua.LState) int {
 	ctx.bufrw = bufrw
 	ctx.mu.Unlock()
 
-	hj := util.NewModule(L, util.Methods{
+	hj := util.SetMethods(L, util.Methods{
 		"read":  ctx.HjRead,
 		"write": ctx.HjWrite,
 		"close": ctx.HjClose,
 	})
 
-	return hj.Self()
+	return util.Push(L, hj)
 }
 
 func (ctx *Context) HjRead(L *lua.LState) int {
@@ -397,9 +384,9 @@ func (ctx *Context) HjClose(L *lua.LState) int {
 
 	if ctx.conn != nil {
 		ctx.conn.Close()
-		// ctx.Hijacked = false
 		ctx.conn = nil
 		ctx.bufrw = nil
+		// ctx.Hijacked = false
 	}
 	return 0
 }

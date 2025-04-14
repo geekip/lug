@@ -8,7 +8,7 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-func (s *Server) logger(logType string, args ...interface{}) {
+func (s *Server) logger(L *lua.LState, logType string, args ...interface{}) {
 
 	if len(args) < 1 {
 		return
@@ -17,7 +17,6 @@ func (s *Server) logger(logType string, args ...interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	L := s.Vm
 	arg := args[0]
 	var callback *lua.LFunction
 	var logMessage string
@@ -62,15 +61,14 @@ func (s *Server) logger(logType string, args ...interface{}) {
 			return
 		}
 
-		if s.config.logLevel == "error" && ctx.err == nil {
+		if s.config.logLevel == "error" && ctx.statusError == nil {
 			return
 		}
 
 		callback = s.config.onRequest
-		w, r := ctx.getResponseLuaApi(L), ctx.getRequestLuaApi(L)
-		luaArgs = []lua.LValue{w, r}
+		luaArgs = []lua.LValue{ctx.luaContext(L)}
 
-		cip := ctx.getClientIp()
+		cip := ctx.remoteIP()
 		tpl := "method: %s, code: %d, path: %s, time: %v, client: %s, server: %s"
 		data := []interface{}{
 			ctx.request.Method,
@@ -81,9 +79,9 @@ func (s *Server) logger(logType string, args ...interface{}) {
 			s.config.addr,
 		}
 
-		if ctx.err != nil {
+		if ctx.statusError != nil {
 			if s.config.logLevel == "error" {
-				d := append(data, ctx.err.Error())
+				d := append(data, ctx.statusError.Error())
 				logMessage = fmt.Sprintf("[error] "+tpl+", (%s)", d...)
 			} else {
 				d := append(data, ctx.statusText)

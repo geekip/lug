@@ -7,27 +7,25 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type Url struct{ *util.Module }
+type Url struct{}
 
 func UrlLoader(L *lua.LState) int {
-	mod := &Url{
-		Module: util.NewModule(L),
-	}
-	mod.SetMethods(util.Methods{
-		"queryEscape":   mod.QueryEscape,
-		"queryUnescape": mod.QueryUnescape,
-		"parse":         mod.ParseURL,
-		"new":           mod.BuildURL,
-		"resolve":       mod.resolveURL,
+	instance := &Url{}
+	api := util.SetMethods(L, util.Methods{
+		"queryEscape":   instance.QueryEscape,
+		"queryUnescape": instance.QueryUnescape,
+		"parse":         instance.ParseURL,
+		"new":           instance.BuildURL,
+		"resolve":       instance.resolveURL,
 	})
-	return mod.Self()
+	return util.Push(L, api)
 }
 
 // QueryEscape lua http.query_escape(string) returns escaped string
 func (u *Url) QueryEscape(L *lua.LState) int {
 	query := L.CheckString(1)
 	escapedUrl := url.QueryEscape(query)
-	return u.Push(lua.LString(escapedUrl))
+	return util.Push(L, lua.LString(escapedUrl))
 }
 
 // QueryUnescape lua http.query_unescape(string) returns unescaped (string, error)
@@ -35,16 +33,16 @@ func (u *Url) QueryUnescape(L *lua.LState) int {
 	query := L.CheckString(1)
 	url, err := url.QueryUnescape(query)
 	if err != nil {
-		return u.NilError(err)
+		return util.NilError(L, err)
 	}
-	return u.Push(lua.LString(url))
+	return util.Push(L, lua.LString(url))
 }
 
 // ParseURL lua http.parse_url(string) returns (table, err)
 func (u *Url) ParseURL(L *lua.LState) int {
 	U, err := url.Parse(L.CheckString(1))
 	if err != nil {
-		return u.NilError(err)
+		return util.NilError(L, err)
 	}
 
 	t := L.NewTable()
@@ -77,7 +75,7 @@ func (u *Url) ParseURL(L *lua.LState) int {
 	}
 	t.RawSetString(`query`, q)
 
-	return u.Push(t)
+	return util.Push(L, t)
 }
 
 // BuildURL lua http.parse_url(table) returns string
@@ -137,7 +135,7 @@ func (u *Url) BuildURL(L *lua.LState) int {
 		}
 
 	})
-	return u.Push(lua.LString(U.String()))
+	return util.Push(L, lua.LString(U.String()))
 }
 
 func (u *Url) resolveURL(L *lua.LState) int {
@@ -145,14 +143,14 @@ func (u *Url) resolveURL(L *lua.LState) int {
 
 	fromUrl, err := url.Parse(from)
 	if err != nil {
-		return u.NilError(err)
+		return util.NilError(L, err)
 	}
 
 	toUrl, err := url.Parse(to)
 	if err != nil {
-		return u.NilError(err)
+		return util.NilError(L, err)
 	}
 
 	url := fromUrl.ResolveReference(toUrl).String()
-	return u.Push(lua.LString(url))
+	return util.Push(L, lua.LString(url))
 }

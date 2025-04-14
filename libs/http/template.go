@@ -57,7 +57,7 @@ var errorTemplate = `
   <div class="container">
     <div class="code">{{.StatusCode}}</div>
     <div class="title">{{.StatusText}}</div>
-    <p class="message">{{.Error}}</p>
+    <p class="message">{{.StatusError}}</p>
   </div>
 </body>
 </html>

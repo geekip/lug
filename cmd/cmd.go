@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -66,25 +65,18 @@ Available options are:
 		optInteractive = true
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	scriptPath, packagePath, arg, err := executeArgs(optExecute)
+	if err != nil {
+		return err
+	}
 
 	// Initialize Lua state
 	L := util.VmPool.Get()
-	defer func() {
-		util.VmPool.Put(L)
-		cancel()
-	}()
-
-	L.SetContext(ctx)
+	defer util.VmPool.Put(L)
 
 	// Set memory limit
 	if optMemoryLimit > 0 {
 		L.SetMx(optMemoryLimit)
-	}
-
-	scriptPath, packagePath, arg, err := executeArgs(L, optExecute)
-	if err != nil {
-		return err
 	}
 
 	// Set Lua package.path
