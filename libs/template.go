@@ -2,8 +2,8 @@ package libs
 
 import (
 	"bytes"
+	"html/template"
 	"lug/util"
-	"text/template"
 
 	lua "github.com/yuin/gopher-lua"
 )

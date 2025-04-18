@@ -74,7 +74,7 @@ func (s *Server) logger(L *lua.LState, logType string, args ...interface{}) {
 			ctx.request.Method,
 			ctx.statusCode,
 			ctx.request.URL.Path,
-			ctx.Since(),
+			ctx.since(),
 			cip,
 			s.config.addr,
 		}

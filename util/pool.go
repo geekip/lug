@@ -62,6 +62,10 @@ var excludes = map[string]bool{
 	"coroutine":           true,
 }
 
+func (p *Pool) New() *lua.LState {
+	return lua.NewState()
+}
+
 func (p *Pool) Get() *lua.LState {
 	p.mut.Lock()
 	defer p.mut.Unlock()
@@ -74,10 +78,6 @@ func (p *Pool) Get() *lua.LState {
 	return p.New()
 }
 
-func (p *Pool) New() *lua.LState {
-	return lua.NewState()
-}
-
 func (p *Pool) Clone(L *lua.LState) *lua.LState {
 	vm := p.Get()
 	L.G.Global.ForEach(func(k, v lua.LValue) {
@@ -85,7 +85,7 @@ func (p *Pool) Clone(L *lua.LState) *lua.LState {
 			vm.G.Global.RawSet(k, v)
 		}
 	})
-	vm.SetTop(0) // Ensure the stack is clean
+	vm.SetTop(0) // 清空栈
 	return vm
 }
 

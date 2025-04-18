@@ -55,20 +55,20 @@ func newClient(L *lua.LState) int {
 		updateClientConfig(L, opts, &cfg)
 	}
 
-	instance := &client{
+	client := &client{
 		config: cfg,
 	}
 
 	api := util.SetMethods(L, util.Methods{
-		"connect": instance.handle(http.MethodConnect),
-		"delete":  instance.handle(http.MethodDelete),
-		"get":     instance.handle(http.MethodGet),
-		"head":    instance.handle(http.MethodHead),
-		"options": instance.handle(http.MethodOptions),
-		"patch":   instance.handle(http.MethodPatch),
-		"post":    instance.handle(http.MethodPost),
-		"put":     instance.handle(http.MethodPut),
-		"trace":   instance.handle(http.MethodTrace),
+		"connect": client.handle(http.MethodConnect),
+		"delete":  client.handle(http.MethodDelete),
+		"get":     client.handle(http.MethodGet),
+		"head":    client.handle(http.MethodHead),
+		"options": client.handle(http.MethodOptions),
+		"patch":   client.handle(http.MethodPatch),
+		"post":    client.handle(http.MethodPost),
+		"put":     client.handle(http.MethodPut),
+		"trace":   client.handle(http.MethodTrace),
 	})
 	return util.Push(L, api)
 }
@@ -83,12 +83,12 @@ func (c *client) handle(method string) lua.LGFunction {
 			updateClientConfig(L, opts, &cfg)
 		}
 
-		req, err := c.request(method, url, cfg)
+		req, err := c.createRequest(method, url, cfg)
 		if err != nil {
 			return util.NilError(L, err)
 		}
 
-		response, err := c.response(L, req, cfg)
+		response, err := c.createResponse(L, req, cfg)
 		if err != nil {
 			return util.NilError(L, err)
 		}
@@ -103,7 +103,7 @@ func (c *client) handle(method string) lua.LGFunction {
 	}
 }
 
-func (c *client) request(method, url string, cfg clientConfig) (*http.Request, error) {
+func (c *client) createRequest(method, url string, cfg clientConfig) (*http.Request, error) {
 	request, err := http.NewRequest(method, url, bytes.NewReader(cfg.body))
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %v", err)
@@ -121,7 +121,7 @@ func (c *client) request(method, url string, cfg clientConfig) (*http.Request, e
 	return request, nil
 }
 
-func (c *client) response(L *lua.LState, req *http.Request, cfg clientConfig) (*clientResponse, error) {
+func (c *client) createResponse(L *lua.LState, req *http.Request, cfg clientConfig) (*clientResponse, error) {
 
 	transport := &http.Transport{
 		Proxy:           http.ProxyFromEnvironment,
@@ -207,7 +207,7 @@ func updateClientConfig(L *lua.LState, opts *lua.LTable, cfg *clientConfig) {
 		case `proxy`:
 			if val, ok := util.CheckString(L, key, v, 2); ok {
 				if proxyUrl, err := url.Parse(val); err != nil {
-					L.ArgError(2, "proxy must be http(s)://<username>:<password>@host:<port>")
+					L.ArgError(2, "proxy must be http(s)|socks(5)://<username>:<password>@host:<port>")
 				} else {
 					cfg.proxy = proxyUrl
 				}
@@ -228,7 +228,7 @@ func updateClientConfig(L *lua.LState, opts *lua.LTable, cfg *clientConfig) {
 				cfg.body = []byte(val)
 			}
 
-		case `max_body_size`:
+		case `maxBodySize`:
 			if val, ok := util.CheckInt64(L, key, v, 2); ok {
 				cfg.maxBodySize = val
 			}

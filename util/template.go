@@ -2,9 +2,9 @@ package util
 
 import (
 	"errors"
+	"html/template"
 	"strings"
 	"sync"
-	"text/template"
 )
 
 type templateEntry struct {

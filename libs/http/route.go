@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
@@ -13,6 +14,10 @@ import (
 
 type Route struct {
 	host        string
+	pattern     string
+	params      *lua.LTable
+	methods     *lua.LTable
+	handler     Handler
 	handlers    map[string]Handler
 	children    map[string]*Route
 	stripPrefix string
@@ -24,8 +29,10 @@ type Route struct {
 	isEnd       bool
 }
 
-var regexCache sync.Map
-var notFound = "the requested path is not registered on the server"
+var (
+	regexCache sync.Map
+	notFound   = "the requested path is not registered on the server"
+)
 
 // makeRegexp compiles and caches regular expressions to avoid redundant compilation
 func makeRegexp(pattern string) *regexp.Regexp {
@@ -54,7 +61,7 @@ func (r *Route) add(method, pattern, stripPrefix string, handler Handler) error 
 
 	pat, err := parsePattern(pattern)
 	if err != nil {
-		return fmt.Errorf("parsing %q: %w", pattern, err)
+		return fmt.Errorf("parsing pattern %q: %w", pattern, err)
 	}
 
 	r.mu.Lock()
@@ -89,70 +96,88 @@ func (r *Route) add(method, pattern, stripPrefix string, handler Handler) error 
 
 	current.isEnd = true
 	current.host = pat.host
+	current.pattern = pattern
 	current.handlers[method] = handler
 	current.stripPrefix = stripPrefix
+
 	return nil
 }
 
 // find traverses the routing tree to match URL segments and collect parameters
 // Returns matched node or nil if no match found
-func (r *Route) find(req *http.Request) (string, Handler, *lua.LTable, int, error) {
+func (r *Route) find(req *http.Request) (*Route, int, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
+	urlPath, host, method := req.URL.Path, req.Host, req.Method
+	segments := strings.Split(urlPath, `/`)
+	params := make(map[string]string)
 	current := r
-	path, host, method := req.URL.Path, req.Host, req.Method
 
-	params := &lua.LTable{}
-	segments := strings.Split(path, `/`)
+	for i := 0; i < len(segments); i++ {
+		segment := segments[i]
 
-	for i, segment := range segments {
-		if segment == "" && (current.paramNode == nil || !current.paramNode.isWild) {
-			continue
+		if segment == "" {
+			paramNode := current.paramNode
+			if paramNode == nil || !paramNode.isWild {
+				continue
+			}
 		}
 
-		if child, ok := current.children[segment]; ok {
+		if child, exists := current.children[segment]; exists {
 			current = child
 			continue
 		}
 
-		if current.paramNode != nil {
-			node := current.paramNode
-			name := node.paramName
-
-			if node.regex != nil && !node.regex.MatchString(segment) {
+		if paramNode := current.paramNode; paramNode != nil {
+			regex := paramNode.regex
+			if regex != nil && !regex.MatchString(segment) {
 				break
 			}
 
-			current = node
+			current = paramNode
+			name := current.paramName
 
-			if node.isWild {
-				paramValue := strings.Join(segments[i:], "/")
-				params.RawSetString(name, lua.LString(paramValue))
+			if paramNode.isWild {
+				params[name] = path.Join(segments[i:]...)
 				break
 			}
-
-			params.RawSetString(name, lua.LString(segment))
+			params[name] = segment
 			continue
 		}
 
-		return "", nil, nil, http.StatusNotFound, errors.New(notFound)
+		return nil, http.StatusNotFound, errors.New(notFound)
+	}
+
+	if !current.isEnd {
+		return nil, http.StatusNotFound, errors.New(notFound)
+	}
+
+	if current.host != "" && current.host != host {
+		err := fmt.Errorf("host not allowed: requested '%s', allowed '%s'", host, current.host)
+		return nil, http.StatusNotFound, err
 	}
 
 	handler := current.handlers[method]
-
-	switch {
-	case !current.isEnd:
-		return "", nil, nil, http.StatusNotFound, errors.New(notFound)
-
-	case current.host != "" && current.host != host:
-		err := fmt.Errorf("host not allowed: requested '%s', allowed '%s'", host, current.host)
-		return "", nil, nil, http.StatusForbidden, err
-
-	case handler == nil:
-		if handler = current.handlers[`*`]; handler == nil {
+	if handler == nil {
+		if handler = current.handlers["*"]; handler == nil {
 			err := fmt.Errorf("the requested HTTP method '%s' is not supported for this path", method)
-			return "", nil, nil, http.StatusInternalServerError, err
+			return nil, http.StatusMethodNotAllowed, err
 		}
 	}
+	current.handler = handler
 
-	return current.stripPrefix, handler, params, http.StatusOK, nil
+	lmethods := &lua.LTable{}
+	for method := range current.handlers {
+		lmethods.Append(lua.LString(method))
+	}
+	current.methods = lmethods
+
+	lparams := &lua.LTable{}
+	for k, v := range params {
+		lparams.RawSetString(k, lua.LString(v))
+	}
+	current.params = lparams
+
+	return current, http.StatusOK, nil
 }

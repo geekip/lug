@@ -22,7 +22,7 @@ import (
 )
 
 type (
-	Handler *lua.LFunction
+	Handler func(*lua.LState, *Context)
 	Server  struct {
 		mu          sync.Mutex
 		prefix      string
@@ -62,7 +62,7 @@ type (
 func extendMethod(s *Server) util.Methods {
 	return util.Methods{
 		"use":     s.Use,
-		"any":     s.handle(`*`),
+		"any":     s.handle("*"),
 		"connect": s.handle(http.MethodConnect),
 		"delete":  s.handle(http.MethodDelete),
 		"get":     s.handle(http.MethodGet),
@@ -140,7 +140,8 @@ func (s *Server) Use(L *lua.LState) int {
 	}
 	middlewares := make([]Handler, 0, n)
 	for i := 1; i <= n; i++ {
-		middlewares = append(middlewares, L.CheckFunction(i))
+		middleware := s.luaHttpHandler(L.CheckFunction(i), true)
+		middlewares = append(middlewares, middleware)
 	}
 	s.mu.Lock()
 	s.middlewares = append(s.middlewares, middlewares...)
@@ -150,6 +151,7 @@ func (s *Server) Use(L *lua.LState) int {
 
 // registers a handler for a specific HTTP method and path.
 func (s *Server) handle(method string) lua.LGFunction {
+	method = strings.ToUpper(method)
 	return func(L *lua.LState) int {
 		path := s.pathJoin(L.CheckString(1))
 		var stripPrefix string
@@ -165,15 +167,45 @@ func (s *Server) handle(method string) lua.LGFunction {
 			L.ArgError(2, "must be a string or function")
 		}
 
-		if len(s.middlewares) > 0 {
-			handler = s.applyMiddleware(L, handler)
-		}
-		method = strings.ToUpper(method)
-		if err := s.route.add(method, path, stripPrefix, handler); err != nil {
+		fn := s.withMiddleware(s.luaHttpHandler(handler, false))
+		if err := s.route.add(method, path, stripPrefix, fn); err != nil {
 			L.RaiseError("failed to add route: %v", err)
 		}
 		return util.Push(L, s.api)
 	}
+}
+
+func (s *Server) luaHttpHandler(handler *lua.LFunction, needNext bool) Handler {
+	return func(l *lua.LState, ctx *Context) {
+		lctx := ctx.luaContext(l)
+		if needNext && ctx.next != nil {
+			var nextGuard sync.Once
+			next := l.NewFunction(func(l *lua.LState) int {
+				nextGuard.Do(func() { ctx.next(l, ctx) })
+				lctx.RawSetString("next", lua.LNil)
+				return 0
+			})
+			lctx.RawSetString("next", next)
+		}
+		if err := util.CallLua(l, handler, lctx); err != nil {
+			s.responseLog(l, ctx, http.StatusRequestTimeout, err)
+		}
+	}
+}
+
+func (s *Server) withMiddleware(handler Handler) Handler {
+	s.mu.Lock()
+	middlewares := make([]Handler, len(s.middlewares))
+	copy(middlewares, s.middlewares)
+	s.mu.Unlock()
+	for i := len(s.middlewares) - 1; i >= 0; i-- {
+		next := handler
+		handler = func(L *lua.LState, ctx *Context) {
+			ctx.next = next
+			middlewares[i](L, ctx)
+		}
+	}
+	return handler
 }
 
 // listen starts the HTTP server on the specified address.
@@ -314,30 +346,26 @@ func (s *Server) ServeHTTP(L *lua.LState, ctx *Context) {
 		}
 		defer s.semaphore.Release(1)
 
-		stripPrefix, handler, params, code, routeErr := s.route.find(ctx.request)
-		if routeErr != nil {
+		route, statusCode, statusError := s.route.find(ctx.request)
+		if statusError != nil {
 			done <- &Status{
-				StatusCode:  code,
-				StatusError: routeErr,
+				StatusCode:  statusCode,
+				StatusError: statusError,
 			}
 			return
 		}
 
-		ctx.params = params
-		if stripPrefix != "" {
-			ctx.stripPrefix(stripPrefix)
+		ctx.route = route
+		ctx.params = route.params
+
+		if route.stripPrefix != "" {
+			ctx.stripPrefix(route.stripPrefix)
 		}
 
 		vm := util.VmPool.Clone(L)
 		defer util.VmPool.Put(vm)
 
-		if err := util.CallLua(vm, handler, ctx.luaContext(vm)); err != nil {
-			done <- &Status{
-				StatusCode:  http.StatusInternalServerError,
-				StatusError: fmt.Errorf("lua execution error: %w", err),
-			}
-			return
-		}
+		route.handler(vm, ctx)
 
 		done <- &Status{StatusCode: http.StatusOK}
 	}()
@@ -350,44 +378,6 @@ func (s *Server) ServeHTTP(L *lua.LState, ctx *Context) {
 		err := errors.New("request processing timeout")
 		s.responseLog(L, ctx, http.StatusRequestTimeout, err)
 	}
-}
-
-// applies the server-level middlewares to a given handler.
-func (s *Server) applyMiddleware(L *lua.LState, handler *lua.LFunction) Handler {
-	s.mu.Lock()
-	count := len(s.middlewares)
-	middlewares := make([]Handler, count)
-	copy(middlewares, s.middlewares)
-	s.mu.Unlock()
-
-	for i := count - 1; i >= 0; i-- {
-		handler = s.wrapMiddleware(L, middlewares[i], handler)
-	}
-	return handler
-}
-
-func (s *Server) wrapMiddleware(L *lua.LState, middleware, next *lua.LFunction) Handler {
-	return L.NewFunction(func(l *lua.LState) int {
-		ctx := l.CheckTable(1)
-		ctx.RawSetString("next", s.wrapNextHandler(l, next, ctx))
-		if err := util.CallLua(l, middleware, ctx); err != nil {
-			l.RaiseError("middleware execution: %v", err)
-		}
-		return 0
-	})
-}
-
-func (s *Server) wrapNextHandler(L *lua.LState, next *lua.LFunction, ctx *lua.LTable) *lua.LFunction {
-	var nextGuard sync.Once
-	return L.NewFunction(func(l *lua.LState) int {
-		nextGuard.Do(func() {
-			ctx.RawSetString("next", lua.LNil)
-			if err := util.CallLua(l, next, ctx); err != nil {
-				l.RaiseError("next handler: %v", err)
-			}
-		})
-		return 0
-	})
 }
 
 // joins server prefix with the given pattern.
