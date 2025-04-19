@@ -147,3 +147,19 @@ func ToGoValue(lv lua.LValue, likeJson bool) interface{} {
 		return v.String()
 	}
 }
+
+func IsArrayTable(val *lua.LTable) bool {
+	if val.MaxN() > 0 {
+		return true
+	}
+	hasExtra := true
+	if val.Len() == 0 {
+		val.ForEach(func(lk, lv lua.LValue) {
+			if lk.Type() == lua.LTString {
+				hasExtra = false
+				return
+			}
+		})
+	}
+	return hasExtra
+}

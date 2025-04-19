@@ -3,7 +3,17 @@ package util
 import (
 	"fmt"
 	"math"
+	"unicode"
 )
+
+func IsASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
+}
 
 func CheckStatusCode(code int) bool {
 	return code >= 100 && code < 600

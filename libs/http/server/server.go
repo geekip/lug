@@ -1,4 +1,4 @@
-package http
+package server
 
 import (
 	"context"
@@ -52,12 +52,15 @@ type (
 		onSuccess         *lua.LFunction // 服务成功
 		onShutdown        *lua.LFunction // 服务关闭
 	}
-	Status struct {
+	httpStatus struct {
+		StatusSize  int64
 		StatusCode  int
 		StatusText  string
 		StatusError error
 	}
 )
+
+var allowMethods = []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodPatch, http.MethodPost, http.MethodDelete}
 
 func extendMethod(s *Server) util.Methods {
 	return util.Methods{
@@ -75,7 +78,7 @@ func extendMethod(s *Server) util.Methods {
 	}
 }
 
-func newServer(L *lua.LState) int {
+func NewServer(L *lua.LState) int {
 	cfg := &ServerConfig{
 		logLevel:          "info",
 		addr:              ":3000",
@@ -140,7 +143,7 @@ func (s *Server) Use(L *lua.LState) int {
 	}
 	middlewares := make([]Handler, 0, n)
 	for i := 1; i <= n; i++ {
-		middleware := s.luaHttpHandler(L.CheckFunction(i), true)
+		middleware := s.HttpHandler(L.CheckFunction(i), true)
 		middlewares = append(middlewares, middleware)
 	}
 	s.mu.Lock()
@@ -167,7 +170,7 @@ func (s *Server) handle(method string) lua.LGFunction {
 			L.ArgError(2, "must be a string or function")
 		}
 
-		fn := s.withMiddleware(s.luaHttpHandler(handler, false))
+		fn := s.withMiddleware(s.HttpHandler(handler, false))
 		if err := s.route.add(method, path, stripPrefix, fn); err != nil {
 			L.RaiseError("failed to add route: %v", err)
 		}
@@ -175,13 +178,13 @@ func (s *Server) handle(method string) lua.LGFunction {
 	}
 }
 
-func (s *Server) luaHttpHandler(handler *lua.LFunction, needNext bool) Handler {
+func (s *Server) HttpHandler(handler *lua.LFunction, needNext bool) Handler {
 	return func(l *lua.LState, ctx *Context) {
-		lctx := ctx.luaContext(l)
-		if needNext && ctx.next != nil {
+		lctx := ctx.LuaContext(l)
+		if needNext && ctx.Next != nil {
 			var nextGuard sync.Once
 			next := l.NewFunction(func(l *lua.LState) int {
-				nextGuard.Do(func() { ctx.next(l, ctx) })
+				nextGuard.Do(func() { ctx.Next(l, ctx) })
 				lctx.RawSetString("next", lua.LNil)
 				return 0
 			})
@@ -201,7 +204,7 @@ func (s *Server) withMiddleware(handler Handler) Handler {
 	for i := len(s.middlewares) - 1; i >= 0; i-- {
 		next := handler
 		handler = func(L *lua.LState, ctx *Context) {
-			ctx.next = next
+			ctx.Next = next
 			middlewares[i](L, ctx)
 		}
 	}
@@ -305,9 +308,9 @@ func (s *Server) responseLog(L *lua.LState, ctx *Context, statusCode int, err er
 	// fmt.Println(err)
 	if err != nil {
 		if s.config.logLevel == "error" {
-			ctx.error(statusCode, err)
+			ctx.Error(statusCode, err)
 		} else {
-			ctx.error(statusCode, nil)
+			ctx.Error(statusCode, nil)
 		}
 	}
 	ctx.statusError = err
@@ -323,13 +326,13 @@ func (s *Server) ServeHTTP(L *lua.LState, ctx *Context) {
 	defer cancel()
 
 	// Execute handler asynchronously
-	done := make(chan *Status, 1)
+	done := make(chan *httpStatus, 1)
 
 	go func() {
 		defer func() {
 			if rec := recover(); rec != nil {
 				err := fmt.Errorf("panic recovered: %v", rec)
-				done <- &Status{
+				done <- &httpStatus{
 					StatusCode:  http.StatusInternalServerError,
 					StatusError: err,
 				}
@@ -338,7 +341,7 @@ func (s *Server) ServeHTTP(L *lua.LState, ctx *Context) {
 
 		// Acquire semaphore for concurrency control
 		if err := s.semaphore.Acquire(timeoutCtx, 1); err != nil {
-			done <- &Status{
+			done <- &httpStatus{
 				StatusCode:  http.StatusServiceUnavailable,
 				StatusError: fmt.Errorf("concurrency limit: %w", err),
 			}
@@ -348,16 +351,16 @@ func (s *Server) ServeHTTP(L *lua.LState, ctx *Context) {
 
 		route, statusCode, statusError := s.route.find(ctx.request)
 		if statusError != nil {
-			done <- &Status{
+			done <- &httpStatus{
 				StatusCode:  statusCode,
 				StatusError: statusError,
 			}
 			return
 		}
-
 		ctx.route = route
 		ctx.params = route.params
 
+		ctx.setStore("LUG_ALLOW_METHODS", strings.Join(route.methods, ","))
 		if route.stripPrefix != "" {
 			ctx.stripPrefix(route.stripPrefix)
 		}
@@ -367,7 +370,7 @@ func (s *Server) ServeHTTP(L *lua.LState, ctx *Context) {
 
 		route.handler(vm, ctx)
 
-		done <- &Status{StatusCode: http.StatusOK}
+		done <- &httpStatus{StatusCode: http.StatusOK}
 	}()
 
 	select {
@@ -453,6 +456,8 @@ func getServerConfig(L *lua.LState, opts *lua.LTable, cfg *ServerConfig) *Server
 			if val, ok := util.CheckString(L, key, v); ok {
 				cfg.errorTemplate = val
 			}
+		default:
+			L.ArgError(1, "unknown cookie field: "+key)
 		}
 	})
 	return cfg

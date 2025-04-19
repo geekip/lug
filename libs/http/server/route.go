@@ -1,4 +1,4 @@
-package http
+package server
 
 import (
 	"errors"
@@ -8,15 +8,13 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-
-	lua "github.com/yuin/gopher-lua"
 )
 
 type Route struct {
 	host        string
 	pattern     string
-	params      *lua.LTable
-	methods     *lua.LTable
+	params      MapString
+	methods     []string
 	handler     Handler
 	handlers    map[string]Handler
 	children    map[string]*Route
@@ -167,17 +165,16 @@ func (r *Route) find(req *http.Request) (*Route, int, error) {
 	}
 	current.handler = handler
 
-	lmethods := &lua.LTable{}
+	methods := make([]string, 0)
 	for method := range current.handlers {
-		lmethods.Append(lua.LString(method))
+		if method == "*" {
+			methods = allowMethods
+			break
+		}
+		methods = append(methods, method)
 	}
-	current.methods = lmethods
-
-	lparams := &lua.LTable{}
-	for k, v := range params {
-		lparams.RawSetString(k, lua.LString(v))
-	}
-	current.params = lparams
+	current.methods = methods
+	current.params = params
 
 	return current, http.StatusOK, nil
 }

@@ -85,11 +85,9 @@ func CheckBool(L *lua.LState, key string, v lua.LValue, n ...int) (bool, bool) {
 func CheckTable(L *lua.LState, key string, v lua.LValue, n ...int) ([]string, bool) {
 	i := getIndex(n)
 	if val, ok := v.(*lua.LTable); ok {
-
-		maxIndex := val.MaxN()
-		if maxIndex == 1 {
+		if IsArrayTable(val) {
 			maxn := val.Len()
-			result := make([]string, maxn)
+			result := make([]string, 0, maxn)
 			for idx := 1; idx <= maxn; idx++ {
 				lv := val.RawGetInt(idx)
 				if str, ok := lv.(lua.LString); ok {
@@ -100,11 +98,9 @@ func CheckTable(L *lua.LState, key string, v lua.LValue, n ...int) ([]string, bo
 				}
 			}
 			return result, true
-		} else {
-			L.ArgError(i, fmt.Sprintf("%s must be a table (array)", key))
 		}
 	}
-	L.ArgError(i, fmt.Sprintf("%s must be a table", key))
+	L.ArgError(i, fmt.Sprintf("%s must be a table (array)", key))
 	return nil, false
 }
 

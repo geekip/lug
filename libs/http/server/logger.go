@@ -1,4 +1,4 @@
-package http
+package server
 
 import (
 	"fmt"
@@ -66,15 +66,15 @@ func (s *Server) logger(L *lua.LState, logType string, args ...interface{}) {
 		}
 
 		callback = s.config.onRequest
-		luaArgs = []lua.LValue{ctx.luaContext(L)}
+		luaArgs = []lua.LValue{ctx.LuaContext(L)}
 
-		cip := ctx.remoteIP()
+		cip := ctx.RemoteIP()
 		tpl := "method: %s, code: %d, path: %s, time: %v, client: %s, server: %s"
 		data := []interface{}{
 			ctx.request.Method,
 			ctx.statusCode,
 			ctx.request.URL.Path,
-			ctx.since(),
+			ctx.Since(),
 			cip,
 			s.config.addr,
 		}

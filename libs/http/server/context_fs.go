@@ -1,4 +1,4 @@
-package http
+package server
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -37,6 +38,13 @@ type (
 
 const defaultMultipartMemory = 32 << 20 // 32 MB
 
+var defaultServeFileOpts = serveFileOpts{
+	ignoreBase:  false,
+	autoIndex:   true,
+	index:       defaultIndexes,
+	prettyIndex: true,
+}
+
 var defaultIndexes = []string{
 	"index.html",
 	"index.htm",
@@ -56,26 +64,32 @@ func init() {
 	}
 }
 
-func serveFile(w http.ResponseWriter, r *http.Request, filePath, fileName string, opts ...*serveFileOpts) (int64, int, error) {
+func serveFile(w http.ResponseWriter, r *http.Request, filePath, fileName string, opts ...*serveFileOpts) httpStatus {
 	fullPath := filePath
 	if fileName != "" {
 		fullPath = filepath.Join(fullPath, fileName)
 	}
 
 	if !isPathSafe(filePath, fullPath) {
-		return 0, http.StatusForbidden, errors.New("path traversal attempt detected")
+		return httpStatus{
+			StatusCode:  http.StatusForbidden,
+			StatusError: errors.New("path traversal attempt detected"),
+		}
 	}
 
 	file, err := getFile(fullPath)
 	if err != nil {
 		statusCode, e := handleFileError(err)
-		return 0, statusCode, e
+		return httpStatus{StatusCode: statusCode, StatusError: e}
 	}
 	defer file.Close()
 
 	info, err := file.Stat()
 	if err != nil {
-		return 0, http.StatusInternalServerError, err
+		return httpStatus{
+			StatusCode:  http.StatusInternalServerError,
+			StatusError: err,
+		}
 	}
 
 	if info.IsDir() {
@@ -87,7 +101,11 @@ func serveFile(w http.ResponseWriter, r *http.Request, filePath, fileName string
 	}
 
 	writeFile(w, r, file, info)
-	return info.Size(), http.StatusOK, nil
+	return httpStatus{
+		StatusSize:  info.Size(),
+		StatusCode:  http.StatusOK,
+		StatusError: nil,
+	}
 }
 
 func writeFile(w http.ResponseWriter, r *http.Request, file http.File, info fs.FileInfo) {
@@ -124,17 +142,24 @@ func handleFileError(err error) (int, error) {
 	return http.StatusInternalServerError, err
 }
 
-func handleDirectory(w http.ResponseWriter, r *http.Request, filePath, fileName string, file http.File, opt *serveFileOpts) (int64, int, error) {
+func handleDirectory(w http.ResponseWriter, r *http.Request, filePath, fileName string, file http.File, opt *serveFileOpts) httpStatus {
 	if opt != nil && opt.autoIndex {
 		if file, info := findIndexFile(opt, filePath); file != nil {
 			defer file.Close()
 			http.ServeContent(w, r, info.Name(), info.ModTime(), file)
-			return info.Size(), http.StatusOK, nil
+			return httpStatus{
+				StatusSize:  info.Size(),
+				StatusCode:  http.StatusOK,
+				StatusError: nil,
+			}
 		}
 	}
 
 	if opt != nil && opt.ignoreBase {
-		return 0, http.StatusForbidden, errors.New("directory access forbidden")
+		return httpStatus{
+			StatusCode:  http.StatusForbidden,
+			StatusError: errors.New("directory access forbidden"),
+		}
 	}
 
 	return dirList(w, file, fileName, opt)
@@ -157,7 +182,7 @@ func findIndexFile(opt *serveFileOpts, filePath string) (http.File, fs.FileInfo)
 	return nil, nil
 }
 
-func dirList(w http.ResponseWriter, file http.File, fileName string, opt *serveFileOpts) (int64, int, error) {
+func dirList(w http.ResponseWriter, file http.File, fileName string, opt *serveFileOpts) httpStatus {
 	fileName = path.Clean("/" + fileName)
 	if !strings.HasSuffix(fileName, "/") {
 		fileName += "/"
@@ -165,7 +190,10 @@ func dirList(w http.ResponseWriter, file http.File, fileName string, opt *serveF
 
 	files, err := file.Readdir(-1)
 	if err != nil {
-		return 0, http.StatusInternalServerError, err
+		return httpStatus{
+			StatusCode:  http.StatusInternalServerError,
+			StatusError: err,
+		}
 	}
 
 	sort.Slice(files, func(i, j int) bool {
@@ -197,16 +225,26 @@ func dirList(w http.ResponseWriter, file http.File, fileName string, opt *serveF
 	var size int64
 	if tpl, e := util.ParseTemplateString(tplStr, "LUG_TPL_DIRLIST"); e == nil {
 		if err := tpl.Execute(&buf, data); err != nil {
-			return 0, http.StatusInternalServerError, err
+			return httpStatus{
+				StatusCode:  http.StatusInternalServerError,
+				StatusError: err,
+			}
 		}
 	}
 
 	size, err = buf.WriteTo(w)
 	if err != nil {
-		return 0, http.StatusInternalServerError, err
+		return httpStatus{
+			StatusCode:  http.StatusInternalServerError,
+			StatusError: err,
+		}
 	}
 
-	return size, http.StatusOK, nil
+	return httpStatus{
+		StatusSize:  size,
+		StatusCode:  http.StatusOK,
+		StatusError: nil,
+	}
 }
 
 func getFile(path string) (http.File, error) {
@@ -278,14 +316,31 @@ func saveFile(fh *multipart.FileHeader, dst string, mode fs.FileMode) error {
 	return os.Chmod(dst, fileMode)
 }
 
-func attachment(w http.ResponseWriter, r *http.Request, filePath, fileName string) (int64, int, error) {
+var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
+
+func attachment(w http.ResponseWriter, r *http.Request, filePath, fileName string) httpStatus {
+
 	stat, err := os.Stat(filePath)
 	if err != nil {
-		return 0, http.StatusInternalServerError, err
+		return httpStatus{
+			StatusCode:  http.StatusInternalServerError,
+			StatusError: err,
+		}
 	}
+
 	if stat.IsDir() {
-		return 0, http.StatusInternalServerError, errors.New("attachment file must be a file")
+		return httpStatus{
+			StatusCode:  http.StatusInternalServerError,
+			StatusError: errors.New("attachment file must be a file"),
+		}
 	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
-	return serveFile(w, r, filePath, fileName)
+
+	headerKey, commonVal := "Content-Disposition", "attachment; filename"
+	if util.IsASCII(fileName) {
+		w.Header().Set(headerKey, commonVal+`="`+quoteEscaper.Replace(fileName)+`"`)
+	} else {
+		w.Header().Set(headerKey, commonVal+`*=UTF-8''`+url.QueryEscape(fileName))
+	}
+
+	return serveFile(w, r, filePath, "")
 }

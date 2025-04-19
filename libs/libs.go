@@ -1,7 +1,7 @@
 package libs
 
 import (
-	"lug/libs/http"
+	lhttp "lug/libs/http"
 	"lug/libs/sql"
 
 	lua "github.com/yuin/gopher-lua"
@@ -12,7 +12,7 @@ var LibPrefix = ""
 var Libs = map[string]lua.LGFunction{
 	"sql":       sql.Loader,
 	"fs":        FsLoader,
-	"http":      http.Loader,
+	"http":      lhttp.Loader,
 	"json":      JsonLoader,
 	"template":  TemplateLoader,
 	"waitGroup": WaitGroupLoader,

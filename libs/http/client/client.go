@@ -1,4 +1,4 @@
-package http
+package client
 
 import (
 	"bytes"
@@ -39,7 +39,7 @@ type clientResponse struct {
 	bodySize lua.LNumber
 }
 
-func newClient(L *lua.LState) int {
+func NewClient(L *lua.LState) int {
 
 	cfg := clientConfig{
 		userAgent:   pkg.Name + "/" + pkg.Version,

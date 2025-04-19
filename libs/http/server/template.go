@@ -1,4 +1,4 @@
-package http
+package server
 
 var errorTemplate = `
 <!DOCTYPE html>
