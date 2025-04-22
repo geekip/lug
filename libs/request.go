@@ -1,4 +1,4 @@
-package client
+package libs
 
 import (
 	"bytes"
@@ -17,11 +17,9 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-type client struct {
-	config clientConfig
-}
+type Client struct{ config ClientConfig }
 
-type clientConfig struct {
+type ClientConfig struct {
 	userAgent   string
 	headers     http.Header
 	proxy       *url.URL
@@ -32,16 +30,20 @@ type clientConfig struct {
 	maxBodySize int64
 }
 
-type clientResponse struct {
+type ClientResponse struct {
 	status   lua.LNumber
 	headers  *lua.LTable
 	body     lua.LString
 	bodySize lua.LNumber
 }
 
-func NewClient(L *lua.LState) int {
+func RequestLoader(L *lua.LState) int {
+	return util.Push(L, L.NewFunction(newRequest))
+}
 
-	cfg := clientConfig{
+func newRequest(L *lua.LState) int {
+
+	cfg := ClientConfig{
 		userAgent:   pkg.Name + "/" + pkg.Version,
 		headers:     make(http.Header),
 		basicAuth:   make(map[string]string),
@@ -54,10 +56,7 @@ func NewClient(L *lua.LState) int {
 		opts := L.CheckTable(1)
 		updateClientConfig(L, opts, &cfg)
 	}
-
-	client := &client{
-		config: cfg,
-	}
+	client := &Client{config: cfg}
 
 	api := util.SetMethods(L, util.Methods{
 		"connect": client.handle(http.MethodConnect),
@@ -73,10 +72,10 @@ func NewClient(L *lua.LState) int {
 	return util.Push(L, api)
 }
 
-func (c *client) handle(method string) lua.LGFunction {
+func (c *Client) handle(method string) lua.LGFunction {
 	return func(L *lua.LState) int {
-		cfg := c.config
 
+		cfg := c.config
 		url := L.CheckString(1)
 		if L.GetTop() >= 2 {
 			opts := L.CheckTable(2)
@@ -103,7 +102,7 @@ func (c *client) handle(method string) lua.LGFunction {
 	}
 }
 
-func (c *client) createRequest(method, url string, cfg clientConfig) (*http.Request, error) {
+func (c *Client) createRequest(method, url string, cfg ClientConfig) (*http.Request, error) {
 	request, err := http.NewRequest(method, url, bytes.NewReader(cfg.body))
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %v", err)
@@ -121,7 +120,7 @@ func (c *client) createRequest(method, url string, cfg clientConfig) (*http.Requ
 	return request, nil
 }
 
-func (c *client) createResponse(L *lua.LState, req *http.Request, cfg clientConfig) (*clientResponse, error) {
+func (c *Client) createResponse(L *lua.LState, req *http.Request, cfg ClientConfig) (*ClientResponse, error) {
 
 	transport := &http.Transport{
 		Proxy:           http.ProxyFromEnvironment,
@@ -147,7 +146,7 @@ func (c *client) createResponse(L *lua.LState, req *http.Request, cfg clientConf
 	}
 	defer res.Body.Close()
 
-	response := &clientResponse{
+	response := &ClientResponse{
 		status:  lua.LNumber(res.StatusCode),
 		headers: L.NewTable(),
 	}
@@ -179,7 +178,7 @@ func (c *client) createResponse(L *lua.LState, req *http.Request, cfg clientConf
 	return response, nil
 }
 
-func updateClientConfig(L *lua.LState, opts *lua.LTable, cfg *clientConfig) {
+func updateClientConfig(L *lua.LState, opts *lua.LTable, cfg *ClientConfig) {
 
 	opts.ForEach(func(k lua.LValue, v lua.LValue) {
 		key := k.String()

@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"log"
+
 	"lug/util"
 
 	lua "github.com/yuin/gopher-lua"
@@ -61,30 +62,30 @@ func (s *Server) logger(L *lua.LState, logType string, args ...interface{}) {
 			return
 		}
 
-		if s.config.logLevel == "error" && ctx.statusError == nil {
+		if s.config.logLevel == "error" && ctx.Status.Error == nil {
 			return
 		}
 
 		callback = s.config.onRequest
-		luaArgs = []lua.LValue{ctx.LuaContext(L)}
+		luaArgs = []lua.LValue{ctx.luaContext(L)}
 
 		cip := ctx.RemoteIP()
 		tpl := "method: %s, code: %d, path: %s, time: %v, client: %s, server: %s"
 		data := []interface{}{
-			ctx.request.Method,
-			ctx.statusCode,
-			ctx.request.URL.Path,
+			ctx.Request.Method,
+			ctx.Status.Code,
+			ctx.Request.URL.Path,
 			ctx.Since(),
 			cip,
 			s.config.addr,
 		}
 
-		if ctx.statusError != nil {
+		if ctx.Status.Error != nil {
 			if s.config.logLevel == "error" {
-				d := append(data, ctx.statusError.Error())
+				d := append(data, ctx.Status.Error.Error())
 				logMessage = fmt.Sprintf("[error] "+tpl+", (%s)", d...)
 			} else {
-				d := append(data, ctx.statusText)
+				d := append(data, ctx.Status.Text)
 				logMessage = fmt.Sprintf("[error] "+tpl+", (%s)", d...)
 			}
 		} else {

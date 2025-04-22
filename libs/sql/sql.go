@@ -118,7 +118,7 @@ func (s *Sql) Transaction(L *lua.LState) int {
 	})
 	instance.api = api
 
-	if err := util.CallLua(L, config.callback, api); err != nil {
+	if err := util.CallLua(L, config.handler, api); err != nil {
 		return util.Error(L, err)
 	}
 	return 0

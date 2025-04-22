@@ -1,30 +1,30 @@
 package libs
 
 import (
-	lhttp "lug/libs/http"
+	"lug/libs/server"
 	"lug/libs/sql"
 
 	lua "github.com/yuin/gopher-lua"
 )
 
-var LibPrefix = ""
-
-var Libs = map[string]lua.LGFunction{
-	"sql":       sql.Loader,
+var libPrefix = ""
+var libModules = map[string]lua.LGFunction{
 	"fs":        FsLoader,
-	"http":      lhttp.Loader,
 	"json":      JsonLoader,
+	"request":   RequestLoader,
+	"server":    server.Loader,
+	"sql":       sql.Loader,
 	"template":  TemplateLoader,
-	"waitGroup": WaitGroupLoader,
 	"url":       UrlLoader,
 	"utf8":      Uft8Loader,
+	"waitGroup": WaitGroupLoader,
 }
 
 func Preload(L *lua.LState) {
-	for name, fn := range Libs {
-		if LibPrefix != "" {
-			name = LibPrefix + name
+	for name, module := range libModules {
+		if libPrefix != "" {
+			name = libPrefix + name
 		}
-		L.PreloadModule(name, fn)
+		L.PreloadModule(name, module)
 	}
 }

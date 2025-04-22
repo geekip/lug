@@ -2,18 +2,71 @@ package server
 
 import (
 	"errors"
+	"html/template"
+	"io"
 	"io/fs"
 	"lug/util"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	lua "github.com/yuin/gopher-lua"
 )
 
-func (ctx *Context) LuaContext(L *lua.LState) *lua.LTable {
-	r := ctx.request
+type (
+	HttpStatus struct {
+		Code   int
+		Length int
+		Text   string
+		Error  error
+	}
+	Context struct {
+		Writer        Writer
+		Request       *http.Request
+		Status        *HttpStatus
+		data          map[string]interface{}
+		Params        map[string]string
+		Route         *Route
+		next          Handler
+		startTime     time.Time
+		ErrorTemplate string
+		mu            sync.RWMutex
+	}
+)
 
+var contextPool = sync.Pool{
+	New: func() interface{} { return &Context{} },
+}
+
+func newContext(w http.ResponseWriter, r *http.Request) *Context {
+	ctx := contextPool.Get().(*Context)
+	ctx.startTime = time.Now()
+	ctx.Request = r
+	ctx.Reset()
+	ctx.Writer.Reset(w)
+	return ctx
+}
+
+func (ctx *Context) Release() {
+	contextPool.Put(ctx)
+}
+
+func (ctx *Context) Reset() {
+	ctx.Status = &HttpStatus{
+		Code: http.StatusOK,
+		Text: http.StatusText(http.StatusOK),
+	}
+	ctx.data = make(map[string]interface{})
+	ctx.Params = make(map[string]string)
+	ctx.Route = nil
+	ctx.next = nil
+}
+
+func (ctx *Context) luaContext(L *lua.LState) *lua.LTable {
+	r := ctx.Request
 	api := util.Methods{
 		"params":         ctx.getParams(),
 		"method":         lua.LString(r.Method),
@@ -64,7 +117,7 @@ func (ctx *Context) LuaContext(L *lua.LState) *lua.LTable {
 
 func (ctx *Context) getParams() *lua.LTable {
 	lparams := &lua.LTable{}
-	for k, v := range ctx.params {
+	for k, v := range ctx.Params {
 		lparams.RawSetString(k, lua.LString(v))
 	}
 	return lparams
@@ -74,12 +127,19 @@ func (ctx *Context) since(L *lua.LState) int {
 	return util.Push(L, lua.LNumber(ctx.Since()))
 }
 
+func (ctx *Context) Since() float64 {
+	elapsed := time.Since(ctx.startTime)
+	microseconds := float64(elapsed.Nanoseconds()) / 1000
+	milliseconds := microseconds / 1000
+	return milliseconds
+}
+
 func (ctx *Context) referer(L *lua.LState) int {
-	return util.Push(L, lua.LString(ctx.request.Referer()))
+	return util.Push(L, lua.LString(ctx.Request.Referer()))
 }
 
 func (req *Context) userAgent(L *lua.LState) int {
-	return util.Push(L, lua.LString(req.request.UserAgent()))
+	return util.Push(L, lua.LString(req.Request.UserAgent()))
 }
 
 func (ctx *Context) setData(L *lua.LState) int {
@@ -87,7 +147,9 @@ func (ctx *Context) setData(L *lua.LState) int {
 	if strings.TrimSpace(key) == "" {
 		L.ArgError(1, "key cannot be empty")
 	}
-	ctx.SetData(key, val)
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	ctx.data[key] = val
 	return 0
 }
 
@@ -96,7 +158,9 @@ func (ctx *Context) getData(L *lua.LState) int {
 	if strings.TrimSpace(key) == "" {
 		L.ArgError(1, "key cannot be empty")
 	}
-	data, ok := ctx.GetData(key)
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+	data, ok := ctx.data[key]
 	return util.Push(L, util.ToLuaValue(data), lua.LBool(ok))
 }
 
@@ -105,60 +169,83 @@ func (ctx *Context) delData(L *lua.LState) int {
 	if strings.TrimSpace(key) == "" {
 		L.ArgError(1, "key cannot be empty")
 	}
-	ctx.DelData(key)
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	delete(ctx.data, key)
 	return 0
 }
 
 func (ctx *Context) getHeader(L *lua.LState) int {
-	header := ctx.GetHeader(L.CheckString(1))
+	header := ctx.Request.Header.Get(L.CheckString(1))
 	return util.Push(L, lua.LString(header))
 }
 
 func (ctx *Context) getPath(L *lua.LState) int {
-	return util.Push(L, lua.LString(ctx.GetPath()))
+	return util.Push(L, lua.LString(ctx.Request.URL.Path))
 }
 
 func (ctx *Context) setPath(L *lua.LState) int {
-	ctx.request.URL.Path = L.CheckString(1)
+	ctx.Request.URL.Path = L.CheckString(1)
 	return 0
 }
 
 func (ctx *Context) getRoute(L *lua.LState) int {
 	route := util.SetMethods(L, util.Methods{
-		"host":    lua.LString(ctx.route.host),
-		"pattern": lua.LString(ctx.route.pattern),
-		"methods": ctx.route.methods,
+		"host":        lua.LString(ctx.Route.host),
+		"pattern":     lua.LString(ctx.Route.pattern),
+		"rawPath":     lua.LString(ctx.Route.rawPath),
+		"stripPrefix": lua.LString(ctx.Route.stripPrefix),
+		"stripPath":   lua.LString(ctx.Route.stripPath),
+		"methods":     ctx.Route.methods,
 	})
 	return util.Push(L, route)
 }
 
 func (ctx *Context) getQuery(L *lua.LState) int {
-	query := ctx.GetQuery(L.CheckString(1))
+	query := ctx.Request.URL.Query().Get(L.CheckString(1))
 	return util.Push(L, lua.LString(query))
 }
 
 func (ctx *Context) getPort(L *lua.LState) int {
-	return util.Push(L, lua.LString(ctx.GetPort()))
+	_, port, err := net.SplitHostPort(ctx.Request.Host)
+	if err != nil {
+		if ctx.Request.TLS != nil {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return util.Push(L, lua.LString(port))
 }
 
 func (ctx *Context) basicAuth(L *lua.LState) int {
 	user, passwd := L.CheckString(1), L.CheckString(2)
-	return util.Push(L, lua.LBool(ctx.BasicAuth(user, passwd)))
+	u, p, ok := ctx.Request.BasicAuth()
+	return util.Push(L, lua.LBool(!ok || user != u || passwd != p))
 }
 
 func (ctx *Context) getBody(L *lua.LState) int {
-	body, err := ctx.GetBody()
+	body, err := io.ReadAll(ctx.Request.Body)
 	if err != nil {
 		return util.NilError(L, err)
 	}
+	defer ctx.Request.Body.Close()
+
 	return util.Push(L, lua.LString(body))
 }
 
 func (ctx *Context) postForm(L *lua.LState) int {
-	form, err := ctx.PostForm()
-	if err != nil {
+	if err := ctx.Request.ParseForm(); err != nil {
 		return util.NilError(L, err)
 	}
+
+	form := make(map[string]string, 0)
+	for key, values := range ctx.Request.PostForm {
+		if len(values) > 0 {
+			form[key] = values[0]
+		}
+	}
+
 	lform := L.NewTable()
 	for key, values := range form {
 		lform.RawSetString(key, lua.LString(values))
@@ -170,8 +257,40 @@ func (ctx *Context) remoteIP(L *lua.LState) int {
 	return util.Push(L, lua.LString(ctx.RemoteIP()))
 }
 
+func (ctx *Context) RemoteIP() string {
+	if ip := ctx.Request.Header.Get("X-Forwarded-For"); ip != "" {
+		return strings.TrimSpace(strings.Split(ip, ",")[0])
+	}
+	if ip := ctx.Request.Header.Get("X-Real-IP"); ip != "" {
+		return ip
+	}
+	if host, _, err := net.SplitHostPort(ctx.Request.RemoteAddr); err == nil {
+		return host
+	}
+	return ctx.Request.RemoteAddr
+}
+
 func (ctx *Context) getScheme(L *lua.LState) int {
 	return util.Push(L, lua.LString(ctx.GetScheme()))
+}
+
+func (ctx *Context) GetScheme() string {
+	// Can't use `r.Request.URL.Scheme`
+	// See: https://groups.google.com/forum/#!topic/golang-nuts/pMUkBlQBDF0
+	header := ctx.Request.Header
+	if scheme := header.Get("X-Forwarded-Proto"); scheme != "" {
+		return scheme
+	}
+	if scheme := header.Get("X-Forwarded-Protocol"); scheme != "" {
+		return scheme
+	}
+	if ssl := header.Get("X-Forwarded-Ssl"); ssl == "on" {
+		return "https"
+	}
+	if scheme := header.Get("X-Url-Scheme"); scheme != "" {
+		return scheme
+	}
+	return "http"
 }
 
 func (ctx *Context) setStatus(L *lua.LState) int {
@@ -181,29 +300,43 @@ func (ctx *Context) setStatus(L *lua.LState) int {
 	return 0
 }
 
+func (ctx *Context) SetStatus(statusCode int) error {
+	if err := ctx.Writer.WriteHeader(statusCode); err != nil {
+		return err
+	}
+	ctx.Status.Code = statusCode
+	ctx.Status.Text = http.StatusText(statusCode)
+	return nil
+}
+
 func (ctx *Context) setHeader(L *lua.LState) int {
 	key, val := L.CheckString(1), L.CheckString(2)
-	ctx.SetHeader(key, val)
+	ctx.Writer.ResponseWriter.Header().Set(key, val)
 	return 0
 }
 
 func (ctx *Context) delHeader(L *lua.LState) int {
-	ctx.DelHeader(L.CheckString(1))
+	ctx.Writer.ResponseWriter.Header().Del(L.CheckString(1))
 	return 0
 }
 
 func (ctx *Context) disableCache(L *lua.LState) int {
-	ctx.DisableCache()
+	w := ctx.Writer.ResponseWriter
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 	return 0
 }
 
 func (ctx *Context) write(L *lua.LState) int {
 	body := []byte(L.CheckString(1))
-	size, err := ctx.Write(body)
+	length, err := ctx.Writer.Write(body)
 	if err != nil {
 		return util.Error(L, err)
 	}
-	return util.Push(L, lua.LNumber(size))
+
+	ctx.Status.Length += length
+	return util.Push(L, lua.LNumber(length))
 }
 
 func (ctx *Context) redirect(L *lua.LState) int {
@@ -215,8 +348,31 @@ func (ctx *Context) redirect(L *lua.LState) int {
 	return 0
 }
 
+func (ctx *Context) Redirect(url string, codes ...int) error {
+
+	if err := ctx.Writer.Written(); err != nil {
+		return err
+	}
+
+	statusCode := http.StatusPermanentRedirect
+	if len(codes) > 0 {
+		statusCode = codes[0]
+	}
+
+	if statusCode < 300 || statusCode > 308 {
+		return errors.New("invalid redirect status code (300-308)")
+	}
+
+	ctx.Status.Code = statusCode
+	ctx.Status.Text = http.StatusText(statusCode)
+	ctx.Writer.written = true
+
+	http.Redirect(ctx.Writer.ResponseWriter, ctx.Request, url, statusCode)
+	return nil
+}
+
 func (ctx *Context) flush(L *lua.LState) int {
-	if err := ctx.Flush(); err != nil {
+	if err := ctx.Writer.Flush(); err != nil {
 		return util.Error(L, err)
 	}
 	return 0
@@ -234,8 +390,47 @@ func (ctx *Context) error(L *lua.LState) int {
 	return 0
 }
 
+func (ctx *Context) Error(statusCode int, err error) error {
+	if e := ctx.SetStatus(statusCode); e != nil {
+		return e
+	}
+
+	if statusCode < 400 || statusCode > 599 {
+		return errors.New("invalid error status code (range 400–599)")
+	}
+
+	ctx.Status.Error = err
+
+	var tpl *template.Template
+	var tplErr error
+
+	if ctx.ErrorTemplate == "" {
+		tpl, tplErr = util.ParseTemplateString(errorTemplate, "LUG_TPL_ERRORPAGE")
+	} else {
+		tpl, tplErr = util.ParseTemplateFiles(ctx.ErrorTemplate)
+	}
+
+	if tplErr != nil {
+		http.Error(ctx.Writer.ResponseWriter, ctx.Status.Text, ctx.Status.Code)
+		return tplErr
+	}
+
+	status := HttpStatus{
+		Code:  statusCode,
+		Text:  ctx.Status.Text,
+		Error: err,
+	}
+
+	if execErr := tpl.Execute(ctx.Writer.ResponseWriter, status); execErr != nil {
+		http.Error(ctx.Writer.ResponseWriter, ctx.Status.Text, statusCode)
+		return execErr
+	}
+
+	return nil
+}
+
 func (ctx *Context) getCookie(L *lua.LState) int {
-	cookie, err := ctx.GetCookie(L.CheckString(1))
+	cookie, err := ctx.Request.Cookie(L.CheckString(1))
 	if err != nil {
 		return util.NilError(L, err)
 	}
@@ -243,7 +438,7 @@ func (ctx *Context) getCookie(L *lua.LState) int {
 }
 
 func (ctx *Context) getCookies(L *lua.LState) int {
-	cookies := ctx.GetCookies()
+	cookies := ctx.Request.Cookies()
 	lcookies := L.NewTable()
 	for _, v := range cookies {
 		lcookies.RawSetString(v.Name, transformCookie(L, v))
@@ -301,15 +496,17 @@ func (ctx *Context) setCookie(L *lua.LState) int {
 		}
 	})
 
-	ctx.SetCookie(cookie)
+	http.SetCookie(ctx.Writer.ResponseWriter, cookie)
 	return 0
 }
 
 func (ctx *Context) delCookie(L *lua.LState) int {
-	err := ctx.DelCookie(L.CheckString(1))
+	cookie, err := ctx.Request.Cookie(L.CheckString(1))
 	if err != nil {
 		return util.Error(L, err)
 	}
+	cookie.MaxAge = -1
+	http.SetCookie(ctx.Writer.ResponseWriter, cookie)
 	return 0
 }
 
@@ -364,7 +561,7 @@ func transformCookie(L *lua.LState, cookie *http.Cookie) *lua.LTable {
 }
 
 func (ctx *Context) hijack(L *lua.LState) int {
-	if err := ctx.Hijack(); err != nil {
+	if err := ctx.Writer.Hijack(); err != nil {
 		return util.NilError(L, err)
 	}
 	hj := util.SetMethods(L, util.Methods{
@@ -376,8 +573,8 @@ func (ctx *Context) hijack(L *lua.LState) int {
 }
 
 func (ctx *Context) readHijack(L *lua.LState) int {
-	size := L.OptInt(1, 1024)
-	body, err := ctx.ReadHijack(size)
+	length := L.OptInt(1, 1024)
+	body, err := ctx.Writer.ReadHijack(length)
 	if err != nil {
 		return util.NilError(L, err)
 	}
@@ -386,7 +583,7 @@ func (ctx *Context) readHijack(L *lua.LState) int {
 
 func (ctx *Context) writeHijack(L *lua.LState) int {
 	body := L.CheckString(1)
-	size, err := ctx.WriteHijack([]byte(body))
+	size, err := ctx.Writer.WriteHijack([]byte(body))
 	if err != nil {
 		return util.NilError(L, err)
 	}
@@ -394,7 +591,7 @@ func (ctx *Context) writeHijack(L *lua.LState) int {
 }
 
 func (ctx *Context) closeHijack(L *lua.LState) int {
-	ctx.CloseHijack()
+	ctx.Writer.CloseHijack()
 	return 0
 }
 
@@ -402,90 +599,91 @@ func (ctx *Context) serveFile(L *lua.LState) int {
 
 	filePath := L.CheckString(1)
 	lopt := L.OptTable(2, L.NewTable())
-	opt := &defaultServeFileOpts
+	cfg := defaultFileConfig
 
 	lopt.ForEach(func(k, v lua.LValue) {
 		key := k.String()
 		switch key {
 		case "ignoreBase":
 			if val, ok := util.CheckBool(L, key, v); ok {
-				opt.ignoreBase = val
+				cfg.ignoreBase = val
 			}
 		case "autoIndex":
 			if val, ok := util.CheckBool(L, key, v); ok {
-				opt.autoIndex = val
+				cfg.autoIndex = val
 			}
 		case "index":
 			if val, ok := util.CheckTable(L, key, v); ok {
-				opt.index = val
+				cfg.index = val
 			}
 		case "prettyIndex":
 			if val, ok := util.CheckBool(L, key, v); ok {
-				opt.prettyIndex = val
+				cfg.prettyIndex = val
 			}
 		}
 	})
-	status := ctx.ServeFile(filePath, opt)
-	if status.StatusError != nil {
-		return util.Error(L, status.StatusError)
+
+	fileinfo, status := ctx.ServeFile(filePath, &cfg)
+	if status.Error != nil {
+		return util.NilError(L, status.Error)
 	}
-	return 0
+	return util.Push(L, fileInfo2Table(L, fileinfo))
 }
 
-func (ctx *Context) uploadFile(L *lua.LState) int {
-	fieldName, dst := L.CheckString(1), L.CheckString(2)
-	mode := fs.FileMode(L.OptInt(3, 0o750))
-	if err := ctx.UploadFile(fieldName, dst, mode); err != nil {
-		return util.Error(L, err)
+func fileInfo2Table(L *lua.LState, fileinfo *FileInfo) *lua.LTable {
+	info := util.SetMethods(L, util.Methods{
+		"path":    fileinfo.Path,
+		"name":    fileinfo.Name,
+		"isDir":   fileinfo.IsDir,
+		"modTime": fileinfo.ModTime,
+		"size":    fileinfo.Size,
+	})
+	if list := fileinfo.List; list != nil {
+		fileList := L.NewTable()
+		for i := 0; i < len(list); i++ {
+			fileList.Append(fileInfo2Table(L, &list[i]))
+		}
+		info.RawSetString("list", fileList)
 	}
-	return 0
+	return info
+}
+
+func (ctx *Context) ServeFile(filePath string, cfg *FileConfig) (*FileInfo, HttpStatus) {
+
+	if err := ctx.Writer.Written(); err != nil {
+		return nil, HttpStatus{
+			Code:  http.StatusInternalServerError,
+			Error: err,
+		}
+	}
+
+	fs := NewFileServer(ctx.Writer.ResponseWriter, ctx.Request, cfg)
+	info, status := fs.ServeFile(filePath, ctx.Route.stripPath)
+
+	if status.Error != nil {
+		ctx.Error(status.Code, status.Error)
+		return nil, status
+	}
+
+	ctx.Status.Length = status.Length
+	return info, status
 }
 
 func (ctx *Context) attachmentFile(L *lua.LState) int {
 	filePath := L.CheckString(1)
 	fileName := L.OptString(2, filepath.Base(filePath))
-	status := ctx.AttachmentFile(filePath, fileName)
-	if status.StatusError != nil {
-		return util.Error(L, status.StatusError)
+	fileinfo, status := ctx.AttachmentFile(filePath, fileName)
+	if status.Error != nil {
+		return util.Error(L, status.Error)
 	}
-	return 0
+	return util.Push(L, fileInfo2Table(L, fileinfo))
 }
 
 func (ctx *Context) cors(L *lua.LState) int {
-	opt := L.OptTable(1, L.NewTable())
-	cfg := getCorsConfig(L, opt, &defaultCorsConfig)
-	ctx.Cors(*cfg)
-	return 0
-}
+	cfg := defaultCorsConfig
+	lopt := L.OptTable(1, L.NewTable())
 
-func invokeAllowOriginFunc(L *lua.LState, fn *lua.LFunction) func(string) bool {
-	return func(origin string) bool {
-		if err := L.CallByParam(lua.P{
-			Fn:      fn,
-			NRet:    1,
-			Protect: true,
-		}, lua.LString(origin)); err != nil {
-			L.RaiseError("originFunc error: %v", err)
-			return false
-		}
-
-		ret := L.Get(-1)
-		L.Pop(1)
-
-		allowed, ok := ret.(lua.LBool)
-		if !ok {
-			L.RaiseError("originFunc must return boolean")
-			return false
-		}
-
-		return allowed == lua.LTrue
-	}
-
-}
-
-func getCorsConfig(L *lua.LState, opt *lua.LTable, defaultCfg *corsConfig) *corsConfig {
-	cfg := *defaultCfg
-	opt.ForEach(func(k lua.LValue, v lua.LValue) {
+	lopt.ForEach(func(k lua.LValue, v lua.LValue) {
 		key := k.String()
 		switch key {
 		case "origins":
@@ -529,5 +727,68 @@ func getCorsConfig(L *lua.LState, opt *lua.LTable, defaultCfg *corsConfig) *cors
 			L.ArgError(1, "unknown CORS field: "+key)
 		}
 	})
-	return &cfg
+
+	ctx.Cors(&cfg)
+	return 0
+}
+
+func invokeAllowOriginFunc(L *lua.LState, fn *lua.LFunction) func(string) bool {
+	return func(origin string) bool {
+		if err := L.CallByParam(lua.P{
+			Fn:      fn,
+			NRet:    1,
+			Protect: true,
+		}, lua.LString(origin)); err != nil {
+			L.RaiseError("originFunc error: %v", err)
+			return false
+		}
+
+		ret := L.Get(-1)
+		L.Pop(1)
+
+		allowed, ok := ret.(lua.LBool)
+		if !ok {
+			L.RaiseError("originFunc must return boolean")
+			return false
+		}
+		return allowed == lua.LTrue
+	}
+}
+
+func (ctx *Context) AttachmentFile(filePath, fileName string) (*FileInfo, HttpStatus) {
+
+	if err := ctx.Writer.Written(); err != nil {
+		return nil, HttpStatus{
+			Code:  http.StatusInternalServerError,
+			Error: err,
+		}
+	}
+
+	if fileName == "" {
+		fileName = filepath.Base(filePath)
+	}
+
+	fs := NewFileServer(ctx.Writer.ResponseWriter, ctx.Request, nil)
+	fileinfo, status := fs.attachment(filePath, fileName)
+	if status.Error != nil {
+		return nil, status
+	}
+
+	ctx.Status.Length = status.Length
+	ctx.Status.Code = status.Code
+
+	return fileinfo, status
+}
+
+func (ctx *Context) uploadFile(L *lua.LState) int {
+	fieldName, dst := L.CheckString(1), L.CheckString(2)
+	mode := fs.FileMode(L.OptInt(3, 0o750))
+	if err := ctx.UploadFile(fieldName, dst, mode); err != nil {
+		return util.Error(L, err)
+	}
+	return 0
+}
+
+func (ctx *Context) UploadFile(fieldName, dst string, modes ...fs.FileMode) error {
+	return uploadFile(ctx.Request, fieldName, dst, modes...)
 }

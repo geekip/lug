@@ -18,9 +18,9 @@ type (
 		driver       string
 	}
 	txConfig struct {
-		options  *sql.TxOptions
-		callback *lua.LFunction
-		timeout  time.Duration
+		options *sql.TxOptions
+		handler *lua.LFunction
+		timeout time.Duration
 	}
 )
 
@@ -73,11 +73,11 @@ func getConfig(L *lua.LState) *dbConfig {
 }
 
 func getTxOptions(L *lua.LState) *txConfig {
-	callback := L.CheckFunction(1)
+	handler := L.CheckFunction(1)
 	lopts := L.OptTable(2, L.NewTable())
 
 	config := &txConfig{
-		callback: callback,
+		handler: handler,
 		options: &sql.TxOptions{
 			Isolation: sql.LevelDefault,
 			ReadOnly:  false,

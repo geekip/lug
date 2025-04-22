@@ -8,28 +8,33 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	lua "github.com/yuin/gopher-lua"
 )
 
 type Route struct {
 	host        string
 	pattern     string
-	params      MapString
 	methods     []string
-	handler     Handler
-	handlers    map[string]Handler
-	children    map[string]*Route
+	rawPath     string
+	stripPath   string
 	stripPrefix string
 	paramName   string
 	paramNode   *Route
+	params      map[string]string
 	regex       *regexp.Regexp
-	mu          sync.RWMutex
+	handler     Handler
+	handlers    map[string]Handler
+	children    map[string]*Route
 	isWild      bool
 	isEnd       bool
+	mu          sync.RWMutex
 }
 
 var (
-	regexCache sync.Map
-	notFound   = "the requested path is not registered on the server"
+	AllowMethods = []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodPatch, http.MethodPost, http.MethodDelete}
+	regexCache   sync.Map
+	notFound     = "the requested path is not registered on the server"
 )
 
 // makeRegexp compiles and caches regular expressions to avoid redundant compilation
@@ -43,7 +48,7 @@ func makeRegexp(pattern string) *regexp.Regexp {
 }
 
 // newNode creates and initializes a new routing node with empty collections
-func newRoute() *Route {
+func NewRoute() *Route {
 	return &Route{
 		children: make(map[string]*Route),
 		handlers: make(map[string]Handler),
@@ -52,9 +57,14 @@ func newRoute() *Route {
 
 // add registers a route handler for the given method and pattern
 // Returns error for invalid inputs or route conflicts
-func (r *Route) add(method, pattern, stripPrefix string, handler Handler) error {
+func (r *Route) Add(method, pattern, stripPrefix string, handler Handler) error {
 	if method == "" || pattern == "" || handler == nil {
 		return errors.New("http server Handle error")
+	}
+
+	allowMethods := strings.Join(AllowMethods, ",")
+	if method != "*" && !strings.Contains(allowMethods, method) {
+		return fmt.Errorf("method not supported: %s", method)
 	}
 
 	pat, err := parsePattern(pattern)
@@ -69,7 +79,7 @@ func (r *Route) add(method, pattern, stripPrefix string, handler Handler) error 
 	for _, segment := range pat.segments {
 		if segment.param {
 			if current.paramNode == nil {
-				paramNode := newRoute()
+				paramNode := NewRoute()
 				paramNode.paramName = segment.name
 				paramNode.isWild = segment.wild
 				if segment.regexp != "" {
@@ -81,7 +91,7 @@ func (r *Route) add(method, pattern, stripPrefix string, handler Handler) error 
 		} else {
 			child, exists := current.children[segment.name]
 			if !exists {
-				child = newRoute()
+				child = NewRoute()
 				current.children[segment.name] = child
 			}
 			current = child
@@ -103,7 +113,7 @@ func (r *Route) add(method, pattern, stripPrefix string, handler Handler) error 
 
 // find traverses the routing tree to match URL segments and collect parameters
 // Returns matched node or nil if no match found
-func (r *Route) find(req *http.Request) (*Route, int, error) {
+func (r *Route) Find(req *http.Request) (*Route, int, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -163,18 +173,48 @@ func (r *Route) find(req *http.Request) (*Route, int, error) {
 			return nil, http.StatusMethodNotAllowed, err
 		}
 	}
+
 	current.handler = handler
+	current.params = params
+
+	return current, http.StatusOK, nil
+}
+
+func (r *Route) ServeHTTP(L *lua.LState, ctx *Context) *HttpStatus {
+
+	route, statusCode, statusError := r.Find(ctx.Request)
+	if statusError != nil {
+		return &HttpStatus{Code: statusCode, Error: statusError}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	methods := make([]string, 0)
-	for method := range current.handlers {
+	for method := range route.handlers {
 		if method == "*" {
-			methods = allowMethods
+			methods = AllowMethods
 			break
 		}
 		methods = append(methods, method)
 	}
-	current.methods = methods
-	current.params = params
+	route.methods = methods
 
-	return current, http.StatusOK, nil
+	urlPath := ctx.Request.URL.Path
+	route.rawPath = urlPath
+	prefix := route.stripPrefix
+
+	if prefix != "" && strings.HasPrefix(urlPath, prefix) {
+		stripPath := strings.TrimPrefix(urlPath, prefix)
+		if stripPath == "" {
+			stripPath = "/"
+		}
+		ctx.Request.URL.Path = stripPath
+		route.stripPath = stripPath
+	}
+
+	ctx.Route = route
+	ctx.Params = route.params
+
+	return route.handler(L, ctx)
 }

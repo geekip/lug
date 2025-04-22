@@ -6,7 +6,7 @@ var errorTemplate = `
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{.StatusCode}} {{.StatusText}}</title>
+  <title>{{.Code}} {{.Text}}</title>
   <style>
     :root {
       --primary-color: #1f2937;
@@ -55,9 +55,9 @@ var errorTemplate = `
 </head>
 <body>
   <div class="container">
-    <div class="code">{{.StatusCode}}</div>
-    <div class="title">{{.StatusText}}</div>
-    <p class="message">{{.StatusError}}</p>
+    <div class="code">{{.Code}}</div>
+    <div class="title">{{.Text}}</div>
+    <p class="message">{{.Error}}</p>
   </div>
 </body>
 </html>
@@ -69,11 +69,11 @@ var dirTemplatePure = `
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Index of {{.DirName}}</title>
+  <title>Index of {{.Name}}</title>
 </head>
 <body>
-  <h3>Index of {{.DirName}}</h3><hr>
-  <pre>{{range .Files}}{{if .IsDir}}
+  <h3>Index of {{.Name}}</h3><hr>
+  <pre>{{range .List}}{{if .IsDir}}
 <a href="{{.Name}}/">{{.Name}}/</a>{{else}}
 <a href="{{.Name}}">{{.Name}}</a>{{end}}{{end}}
   </pre>
@@ -87,7 +87,7 @@ var dirTemplatePretty = `
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Index of {{.DirName}}</title>
+  <title>Index of {{.Name}}</title>
   <style>
     * {
       margin: 0;
@@ -141,6 +141,8 @@ var dirTemplatePretty = `
     .name {
       flex-grow: 1;
       font-size: 0.9rem;
+      text-overflow:ellipsis;
+      overflow:hidden;
     }
     .dir-icon::after {
       content: '📁';
@@ -157,18 +159,18 @@ var dirTemplatePretty = `
 </head>
 <body>
   <div class="header">
-    <div class="title">Index of {{.DirName}}</div>
+    <div class="title">Index of {{.Name}}</div>
   </div>
-  <div class="list">{{range .Files}}{{if .IsDir}}
+  <div class="list">{{range .List}}{{if .IsDir}}
     <a href="{{.Name}}/" class="item">
       <div class="icon dir-icon"></div>
       <div class="name">{{.Name}}</div>
-      <div class="meta">Directory</div>
+      <div class="meta">-</div>
     </a>{{else}}
     <a href="{{.Name}}" class="item">
       <div class="icon file-icon"></div>
       <div class="name">{{.Name}}</div>
-      <div class="meta">File</div>
+       <div class="meta">{{.Size}}</div>
     </a>{{end}}{{end}}
   </div>
 </body>

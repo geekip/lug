@@ -10,8 +10,8 @@ import (
 )
 
 type corsConfig struct {
-	origins                []string
 	originFunc             func(string) bool
+	origins                []string
 	methods                []string
 	credentials            bool
 	allowWildcard          bool
@@ -36,19 +36,18 @@ const (
 
 var defaultCorsConfig = corsConfig{
 	origins:        []string{"*"},
-	methods:        allowMethods,
+	methods:        AllowMethods,
 	allowedHeaders: []string{"Origin", "Content-Length", "Content-Type"},
 	maxAge:         86400 * time.Second,
 }
 
-func (ctx *Context) Cors(opt ...corsConfig) {
-	cfg := &defaultCorsConfig
-	if len(opt) > 0 {
-		cfg = &opt[0]
+func (ctx *Context) Cors(cfg *corsConfig) {
+	if cfg == nil {
+		cfg = &defaultCorsConfig
 	}
 	cfg.compiledOriginPatterns = compileOriginPatterns(cfg.origins)
 
-	w, r := ctx.response, ctx.request
+	w, r := ctx.Writer.ResponseWriter, ctx.Request
 	origin := r.Header.Get("Origin")
 
 	w.Header().Add(hdrVary, "Origin")
@@ -56,7 +55,7 @@ func (ctx *Context) Cors(opt ...corsConfig) {
 
 	if origin == "" {
 		if preflight {
-			ctx.statusCode = http.StatusOK
+			ctx.Status.Code = http.StatusOK
 		}
 		return
 	}
@@ -72,7 +71,7 @@ func (ctx *Context) Cors(opt ...corsConfig) {
 
 	if allowOrigin == "" {
 		if preflight {
-			ctx.statusCode = http.StatusOK
+			ctx.Status.Code = http.StatusOK
 		}
 		return
 	}
@@ -104,6 +103,7 @@ func checkAllowedOrigins(cfg *corsConfig, origin string) string {
 }
 
 func setCorsHeaders(w http.ResponseWriter, cfg *corsConfig, allowOrigin string, preflight bool, ctx *Context) {
+
 	w.Header().Set(hdrACAO, allowOrigin)
 	if cfg.credentials {
 		w.Header().Set(hdrACACred, "true")
@@ -121,15 +121,13 @@ func setCorsHeaders(w http.ResponseWriter, cfg *corsConfig, allowOrigin string, 
 
 	methods := strings.Join(cfg.methods, ",")
 	if !cfg.hasCustomAllowMethods {
-		if routerMethods, ok := ctx.getStore("LUG_ALLOW_METHODS").(string); ok {
-			methods = routerMethods
-		}
+		methods = strings.Join(ctx.Route.methods, ",")
 	}
 	w.Header().Set(hdrACAMethods, methods)
 
 	if len(cfg.allowedHeaders) > 0 {
 		w.Header().Set(hdrACAHeaders, strings.Join(cfg.allowedHeaders, ","))
-	} else if h := ctx.request.Header.Get(hdrACRHeaders); h != "" {
+	} else if h := ctx.Request.Header.Get(hdrACRHeaders); h != "" {
 		w.Header().Set(hdrACAHeaders, h)
 	}
 
